@@ -26,6 +26,7 @@ RUN composer install --no-dev --no-scripts --prefer-dist --no-interaction
 COPY . .
 COPY --from=assets /app/public/build ./public/build
 RUN composer install --no-dev --optimize-autoloader --no-interaction
+RUN chmod +x docker/start.sh
 # One production-grade image: FrankenPHP serves Octane (multi-threaded), no nginx+php-fpm to orchestrate.
 # Octane keeps the app in memory between requests, so tenant state must never live in a raw static (see tenancy).
 EXPOSE 8000
