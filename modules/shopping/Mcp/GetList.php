@@ -1,0 +1,49 @@
+<?php
+
+namespace Modules\Shopping\Mcp;
+
+use App\Mcp\Tool;
+use Illuminate\Contracts\JsonSchema\JsonSchema;
+use Laravel\Mcp\Request;
+use Laravel\Mcp\Response;
+use Laravel\Mcp\ResponseFactory;
+use Laravel\Mcp\Server\Tools\Annotations\IsReadOnly;
+use Modules\Shopping\ShoppingItem;
+
+#[IsReadOnly]
+class GetList extends Tool
+{
+    protected string $module = 'shopping';
+
+    protected string $name = 'shopping_get_list';
+
+    protected ?string $app = 'shopping';
+
+    protected string $description = 'Use this when the user wants to see what is on one shopping list. Returns its items with quantity, note, aisle and bought state. Read-only.';
+
+    protected string $title = 'Get shopping list';
+
+    public function schema(JsonSchema $schema): array
+    {
+        return [
+            'list_id' => $schema->integer()->description('Shopping list id, from shopping_list_shopping_lists.')->required(),
+            'include_bought' => $schema->boolean()->description('Include items already bought (default true).'),
+        ];
+    }
+
+    public function handle(Request $request): Response|ResponseFactory
+    {
+        $list = ShoppingData::list($this->user(), $request->get('list_id'));
+        if (! $list) {
+            return $this->notFound('List');
+        }
+
+        $items = $list->items()
+            ->when($request->get('include_bought', true) === false, fn ($q) => $q->where('bought', false))
+            ->orderBy('bought')->orderBy('position')->orderBy('id')->get();
+
+        return Response::structured(ShoppingData::listPayload($list) + [
+            'items' => $items->map(fn (ShoppingItem $i) => ShoppingData::itemPayload($i))->values(),
+        ]);
+    }
+}

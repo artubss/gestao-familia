@@ -1,0 +1,300 @@
+<?php
+
+namespace App\Http\Controllers\Admin;
+
+use App\Http\Controllers\Controller;
+use App\Models\Family;
+use App\Models\User;
+use App\Support\AdminPush;
+use App\Support\Billing\Billing;
+use App\Support\Engagement;
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
+use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
+
+// Platform data for admin.familywell.org: accounts and families, never what families store (no notes,
+// lists, expenses...) and never secrets. Lists: 50 per page, newest first, literal search. Read-only
+// except one write: granting / revoking a family's comped lifetime access (Billing::setLifetime).
+class AdminApiController extends Controller
+{
+    private const PAGE = 50;
+
+    public function me(Request $request): JsonResponse
+    {
+        $user = $request->user();
+
+        return response()->json([
+            'user_id' => $user->id, 'name' => $user->name, 'email' => $user->email,
+            'email_verified' => $user->hasVerifiedEmail(), 'is_platform_admin' => (bool) $user->is_platform_admin,
+            'families' => $user->families()->orderBy('name')->get(['families.id', 'families.name'])
+                ->map(fn ($f) => ['id' => $f->id, 'name' => $f->name])->values(),
+        ]);
+    }
+
+    public function stats(): JsonResponse
+    {
+        // The demo family and its members are seeded and reset nightly: not real usage.
+        $real = fn () => User::query()->whereNotIn('id', fn ($q) => $q->select('family_user.user_id')->from('family_user')
+            ->join('families', 'families.id', '=', 'family_user.family_id')->where('families.is_demo', true));
+
+        return response()->json([
+            'users' => $real()->count(),
+            'verifiedUsers' => $real()->whereNotNull('email_verified_at')->count(),
+            'families' => Family::query()->where('is_demo', false)->count(),
+            'signups7d' => $real()->where('created_at', '>=', now()->subDays(7))->count(),
+            'signups30d' => $real()->where('created_at', '>=', now()->subDays(30))->count(),
+            // Same "paying" set as Billing::PAID (past_due keeps access while Stripe retries the card).
+            'payingFamilies' => Family::query()->where('is_demo', false)->whereIn('subscription_status', ['active', 'trialing', 'past_due'])->count(),
+            'pastDueFamilies' => Family::query()->where('is_demo', false)->where('subscription_status', 'past_due')->count(),
+            // Comped "Lifetime (VIP)" families: have access without paying, so not in payingFamilies.
+            'lifetimeFamilies' => Family::query()->where('is_demo', false)->where('access_override', Family::LIFETIME)->count(),
+        ]);
+    }
+
+    public function users(Request $request): JsonResponse
+    {
+        $query = $this->userQuery();
+        $rows = self::sorted(self::search($query, self::q($request), ['users.name', 'users.email']), $request, [
+            'name' => 'lower(users.name)', 'email' => 'lower(users.email)', 'country' => 'users.country',
+            // The grammar writes the JSON lookup for the driver (->> on Postgres, json_extract on SQLite).
+            'source' => $query->getQuery()->getGrammar()->wrap('users.first_touch->source'),
+            'familyCount' => 'families_count', 'subscription' => 'plan_rank', 'createdAt' => 'users.created_at',
+            // ponytail: last_seen_at only, not the old web-session fallback lastActive() adds; that fallback
+            // only matters for users unseen since last_seen_at shipped, who sort last anyway.
+            'lastActive' => 'users.last_seen_at',
+        ], 'users')
+            ->offset((self::page($request) - 1) * self::PAGE)->limit(self::PAGE + 1)->get();
+
+        return self::paged($rows, fn (User $u) => self::userItem($u));
+    }
+
+    public function user(int $id): JsonResponse
+    {
+        $user = $this->userQuery()->addSelect('users.locale', 'users.is_platform_admin', 'users.analytics_id', 'users.first_touch')->find($id);
+        if (! $user) {
+            return response()->json(['error' => 'not_found'], 404);
+        }
+
+        return response()->json(self::userItem($user) + [
+            'locale' => $user->locale,
+            'isPlatformAdmin' => (bool) $user->is_platform_admin,
+            // Detail only (not the list): the admin links the Umami id to its analytics profile and shows
+            // where the person first came from ({source, medium, campaign, referrer, landing_path, at}).
+            'analyticsId' => $user->analytics_id,
+            'firstTouch' => $user->first_touch,
+            'families' => $user->families()->orderBy('name')->get(['families.id', 'families.name'])
+                ->map(fn ($f) => ['id' => $f->id, 'name' => $f->name, 'role' => $f->pivot->role])->values(),
+        ]);
+    }
+
+    public function families(Request $request): JsonResponse
+    {
+        $rows = self::sorted(self::search($this->familyQuery(), self::q($request), ['families.name', 'owners.name', 'owners.email']), $request, [
+            'name' => 'lower(families.name)', 'ownerName' => 'lower(owners.name)', 'memberCount' => 'members_count',
+            // Same order as the badge reads: lifetime, paid, past due, trial, none.
+            'subscription' => "case when families.access_override = '".Family::LIFETIME."' then 4 when families.subscription_status = 'active' then 3 when families.subscription_status = 'past_due' then 2 when families.subscription_status = 'trialing' then 1 else 0 end",
+            'engagement' => '(select count(*) from family_module_activity where family_module_activity.family_id = families.id)',
+            'createdAt' => 'families.created_at', 'lastActive' => 'last_active',
+        ], 'families')
+            ->offset((self::page($request) - 1) * self::PAGE)->limit(self::PAGE + 1)->get();
+        // Every family's module activity for this page in ONE query (the progress bar), not one per row.
+        $activity = DB::table('family_module_activity')->whereIn('family_id', $rows->pluck('id'))->get()->groupBy('family_id');
+
+        return self::paged($rows, fn (Family $f) => self::familyItem($f, $activity->get($f->id, collect())));
+    }
+
+    // The admin toggle: PUT grants comped lifetime access, DELETE revokes it. Idempotent; answers with
+    // the family as `family()` does. Stripe never touches the flag, so a webhook can't undo a grant.
+    public function grantLifetime(Request $request, int $id): JsonResponse
+    {
+        return $this->setLifetime($request, $id, true);
+    }
+
+    public function revokeLifetime(Request $request, int $id): JsonResponse
+    {
+        return $this->setLifetime($request, $id, false);
+    }
+
+    private function setLifetime(Request $request, int $id, bool $on): JsonResponse
+    {
+        $family = Family::find($id);
+        if (! $family) {
+            return response()->json(['error' => 'not_found'], 404);
+        }
+        Billing::setLifetime($family, $on, 'admin:'.$request->user()->id);
+
+        return $this->family($id);
+    }
+
+    public function pushKey(): JsonResponse
+    {
+        return response()->json(['publicKey' => config('webpush.vapid.public_key')]);
+    }
+
+    public function pushSubscribe(Request $request): JsonResponse
+    {
+        $data = $request->validate(['endpoint' => ['required', 'url', 'max:500'], 'keys.p256dh' => ['required', 'string', 'max:200'], 'keys.auth' => ['required', 'string', 'max:100']]);
+        AdminPush::subscribe($request->user(), $data['endpoint'], $data['keys']['p256dh'], $data['keys']['auth']);
+
+        return response()->json(['ok' => true]);
+    }
+
+    public function pushUnsubscribe(Request $request): JsonResponse
+    {
+        AdminPush::unsubscribe($request->validate(['endpoint' => ['required', 'string']])['endpoint']);
+
+        return response()->json(['ok' => true]);
+    }
+
+    public function pushTest(): JsonResponse
+    {
+        AdminPush::send('FamilyWell Admin', 'Notifications are on for this device.');
+
+        return response()->json(['ok' => true]);
+    }
+
+    public function family(int $id): JsonResponse
+    {
+        $family = $this->familyQuery()->find($id);
+        if (! $family) {
+            return response()->json(['error' => 'not_found'], 404);
+        }
+
+        return response()->json(self::familyItem($family, null) + [
+            'members' => $family->members()->orderBy('name')->get(['users.id', 'users.name', 'users.email'])
+                ->map(fn ($m) => ['id' => $m->id, 'name' => $m->name, 'email' => $m->email, 'role' => $m->pivot->role,
+                    'joinedAt' => self::iso($m->pivot->created_at)])->values(),
+        ]);
+    }
+
+    private function userQuery(): Builder
+    {
+        // Last activity = users.last_seen_at (web + MCP, see TrackLastSeen), falling back to the newest web
+        // session for activity from before that column existed. One correlated subquery per row.
+        return User::query()
+            ->select('users.id', 'users.name', 'users.email', 'users.email_verified_at', 'users.created_at', 'users.last_seen_at', 'users.last_seen_via', 'users.country', 'users.first_touch')
+            ->selectSub(DB::table('sessions')->selectRaw('max(last_activity)')->whereColumn('sessions.user_id', 'users.id'), 'last_active')
+            // The best plan across their families, as a rank (PLAN_RANK), so the list can colour subscribers. One
+            // correlated subquery per row, like last_active.
+            ->selectSub(DB::table('family_user')->join('families', 'families.id', '=', 'family_user.family_id')
+                ->whereColumn('family_user.user_id', 'users.id')
+                ->selectRaw("max(case when families.access_override = ? then 4 when families.subscription_status = 'active' then 3 when families.subscription_status = 'past_due' then 2 when families.subscription_status = 'trialing' then 1 else 0 end)", [Family::LIFETIME]), 'plan_rank')
+            ->withCount('families');
+    }
+
+    private function familyQuery(): Builder
+    {
+        return Family::query()
+            ->leftJoin('users as owners', 'owners.id', '=', 'families.owner_id')
+            ->select('families.id', 'families.name', 'families.created_at', 'families.is_demo', 'families.subscription_status', 'families.stripe_customer_id', 'families.access_override', 'families.engaged_at', 'owners.name as owner_name')
+            // The family was last active when its most recently seen member was (users.last_seen_at, web + MCP).
+            // One correlated subquery per row, like the users list's last_active.
+            ->selectSub(DB::table('family_user')->join('users', 'users.id', '=', 'family_user.user_id')
+                ->whereColumn('family_user.family_id', 'families.id')->selectRaw('max(users.last_seen_at)'), 'last_active')
+            ->withCount('members');
+    }
+
+    // plan_rank (userQuery) back to what familyItem says: lifetime wins, then a paid plan, then one Stripe is
+    // retrying, then a trial.
+    private const PLAN_RANK = [3 => 'active', 2 => 'past_due', 1 => 'trialing'];
+
+    private static function userItem(User $u): array
+    {
+        return [
+            'id' => $u->id, 'name' => $u->name, 'email' => $u->email, 'verified' => $u->email_verified_at !== null,
+            'createdAt' => self::iso($u->created_at),
+            ...self::lastActive($u),
+            'familyCount' => (int) $u->families_count,
+            'country' => $u->country, // ISO alpha-2 from Cloudflare, null until their first web visit since it was added
+            // Just the first touch's source for the list's Source column (the detail has the whole first touch).
+            // Null for users from before attribution existed (2026-10-10) or self-hosted installs.
+            'source' => $u->first_touch['source'] ?? null,
+            'subscriptionStatus' => self::PLAN_RANK[(int) $u->plan_rank] ?? null,
+            'lifetime' => (int) $u->plan_rank === 4,
+        ];
+    }
+
+    /** @return array{lastActiveAt: ?string, lastActiveVia: ?string} the newer of last_seen_at and the newest web session */
+    private static function lastActive(User $u): array
+    {
+        $session = $u->last_active ? Carbon::createFromTimestamp((int) $u->last_active) : null;
+        $seen = $u->last_seen_at;
+        if ($seen && (! $session || $seen->gte($session))) {
+            return ['lastActiveAt' => self::iso($seen), 'lastActiveVia' => $u->last_seen_via];
+        }
+
+        return ['lastActiveAt' => self::iso($session), 'lastActiveVia' => $session ? 'web' : null];
+    }
+
+    /** @param  iterable<object>|null  $activity  preloaded family_module_activity rows (null = load them) */
+    private static function familyItem(Family $f, ?iterable $activity): array
+    {
+        return [
+            'id' => $f->id, 'name' => $f->name, 'ownerName' => $f->owner_name, 'memberCount' => (int) $f->members_count,
+            'createdAt' => self::iso($f->created_at), 'lastActiveAt' => self::iso($f->last_active), 'isDemo' => (bool) $f->is_demo,
+            // The Stripe customer id isn't a secret (it only works with our Stripe key); the admin links to it.
+            'subscriptionStatus' => $f->subscription_status, 'stripeCustomerId' => $f->stripe_customer_id,
+            'lifetime' => $f->access_override === Family::LIFETIME, // comped access (admin toggle below)
+            // Free-period progress: modules used so far (the bar's segments) and when the paywall shows.
+            'engagement' => Engagement::summary($f, $activity),
+            'paying' => Billing::isPaid($f),
+        ];
+    }
+
+    // LIKE with % _ \ escaped, so the search box is literal; portable across SQLite (tests) and Postgres.
+    private static function search(Builder $query, string $q, array $columns): Builder
+    {
+        if ($q === '') {
+            return $query;
+        }
+        // '!' escapes, not a backslash: PDO's pgsql placeholder scanner reads the backslash in escape '\' as escaping
+        // the quote, loses track of the string and then miscounts the ? placeholders, so the users search
+        // (which has a ? earlier, in plan_rank) failed on Postgres. SQLite tests never saw it.
+        $like = '%'.str_replace(['!', '%', '_'], ['!!', '!%', '!_'], mb_strtolower($q)).'%';
+
+        return $query->where(function (Builder $w) use ($columns, $like) {
+            foreach ($columns as $column) {
+                $w->orWhereRaw("lower({$column}) like ? escape '!'", [$like]);
+            }
+        });
+    }
+
+    // The admin tables sort on the server (a page holds 50 rows, so sorting in the browser only sorted
+    // that page). ?sort is the table's column id, looked up in $sorts (column id => SQL), so it can never
+    // inject SQL; unknown or missing = newest first. NULLs go last both ways so blanks never top the list.
+    // id breaks ties so paging stays stable.
+    private static function sorted(Builder $query, Request $request, array $sorts, string $table): Builder
+    {
+        $sort = $request->query('sort');
+        if (is_string($sort) && isset($sorts[$sort])) {
+            $query->orderByRaw($sorts[$sort].' '.($request->query('dir') === 'asc' ? 'asc' : 'desc').' nulls last');
+        } else {
+            $query->orderByDesc("{$table}.created_at");
+        }
+
+        return $query->orderByDesc("{$table}.id");
+    }
+
+    private static function q(Request $request): string
+    {
+        return mb_substr(trim((string) $request->query('q', '')), 0, 80);
+    }
+
+    // Clamped so a silly page number can't become a huge OFFSET.
+    private static function page(Request $request): int
+    {
+        return max(1, min(10000, (int) $request->query('page', 1)));
+    }
+
+    private static function paged($rows, callable $map): JsonResponse
+    {
+        return response()->json(['items' => $rows->take(self::PAGE)->map($map)->values(), 'hasMore' => $rows->count() > self::PAGE]);
+    }
+
+    private static function iso($date): ?string
+    {
+        return $date ? Carbon::parse($date)->utc()->toIso8601ZuluString('millisecond') : null;
+    }
+}

@@ -1,0 +1,41 @@
+import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
+import { SidebarMenu, SidebarMenuButton, SidebarMenuItem, useSidebar } from '@/components/ui/sidebar';
+import { UserInfo } from '@/components/user-info';
+import { UserMenuContent } from '@/components/user-menu-content';
+import { useIsMobile } from '@/hooks/use-mobile';
+import { type SharedData } from '@/types';
+import { usePage } from '@inertiajs/react';
+import { ChevronsUpDown } from 'lucide-react';
+
+export function NavUser() {
+    const { auth } = usePage<SharedData>().props;
+    const { state } = useSidebar();
+    const isMobile = useIsMobile();
+
+    return (
+        <SidebarMenu>
+            <SidebarMenuItem>
+                <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                        {/* Phone drawer (max-md): taller row, 40px avatar, 16px name, so it matches the touch-sized links. Desktop
+                            (md): 52px row, 36px avatar, 15px name, in step with the 40px desktop links; collapsed rail keeps 32px. */}
+                        <SidebarMenuButton
+                            size="lg"
+                            className="text-sidebar-accent-foreground data-[state=open]:bg-sidebar-accent group max-md:h-16 max-md:gap-3 max-md:px-3 md:h-13 max-md:[&_.text-sm]:text-base md:[&_.text-sm]:text-[15px] max-md:[&>span:first-child]:size-10 md:[&>span:first-child]:size-9 md:group-data-[collapsible=icon]:[&>span:first-child]:size-8 max-md:[&>svg]:size-5"
+                        >
+                            <UserInfo user={auth.user} />
+                            <ChevronsUpDown className="ml-auto size-4" />
+                        </SidebarMenuButton>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent
+                        className="w-(--radix-dropdown-menu-trigger-width) min-w-56 rounded-lg"
+                        align="end"
+                        side={isMobile ? 'bottom' : state === 'collapsed' ? 'left' : 'bottom'}
+                    >
+                        <UserMenuContent user={auth.user} />
+                    </DropdownMenuContent>
+                </DropdownMenu>
+            </SidebarMenuItem>
+        </SidebarMenu>
+    );
+}

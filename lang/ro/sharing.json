@@ -1,0 +1,20 @@
+{
+    "title_named": "Partajează „:name”",
+    "close": "Închide",
+    "access_title": "Cine are acces",
+    "owner": "Proprietar",
+    "you": "(tu)",
+    "no_access": "Fără acces",
+    "can_edit": "Poate edita",
+    "can_view": "Poate vedea",
+    "vis_family": "Familia",
+    "vis_invited": "Invitați",
+    "vis_private": "Doar eu",
+    "vis_family_desc": "Oricine din familie îl poate găsi. Rolurile sunt mai jos.",
+    "vis_invited_desc": "Doar persoanele pe care le inviți îl pot găsi.",
+    "vis_private_desc": "Doar tu îl poți vedea.",
+    "link_title": "Link doar pentru vizualizare",
+    "link_view_desc": "Oricine are linkul poate vedea. Nu e nevoie de cont.",
+    "create_link": "Creează un link doar pentru vizualizare",
+    "no_link": "Încă nu există un link de vizualizare."
+}

@@ -1,0 +1,20 @@
+{
+    "title_named": "„:name” delen",
+    "close": "Sluiten",
+    "access_title": "Wie heeft toegang",
+    "owner": "Eigenaar",
+    "you": "(jij)",
+    "no_access": "Geen toegang",
+    "can_edit": "Kan bewerken",
+    "can_view": "Kan bekijken",
+    "vis_family": "Gezin",
+    "vis_invited": "Uitgenodigd",
+    "vis_private": "Alleen ik",
+    "vis_family_desc": "Iedereen in het gezin kan het vinden. Rollen hieronder.",
+    "vis_invited_desc": "Alleen de mensen die je uitnodigt kunnen het vinden.",
+    "vis_private_desc": "Alleen jij kunt het zien.",
+    "link_title": "Link om te bekijken",
+    "link_view_desc": "Iedereen met de link kan kijken. Geen account nodig.",
+    "create_link": "Maak een link om te bekijken",
+    "no_link": "Nog geen link om te bekijken."
+}

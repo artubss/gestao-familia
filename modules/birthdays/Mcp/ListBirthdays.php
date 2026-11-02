@@ -1,0 +1,49 @@
+<?php
+
+namespace Modules\Birthdays\Mcp;
+
+use App\Mcp\Tool;
+use Illuminate\Contracts\JsonSchema\JsonSchema;
+use Laravel\Mcp\Request;
+use Laravel\Mcp\Response;
+use Laravel\Mcp\ResponseFactory;
+use Laravel\Mcp\Server\Tools\Annotations\IsReadOnly;
+use Modules\Birthdays\BirthdayDate;
+
+// List and "upcoming" in one tool (ponytail): upcoming is just the soonest-first list cut at a window.
+#[IsReadOnly]
+class ListBirthdays extends Tool
+{
+    protected string $module = 'birthdays';
+
+    protected string $name = 'birthdays_list';
+
+    protected ?string $app = 'birthdays';
+
+    protected string $description = 'Use this when the user asks whose birthday is coming up, or for someone\'s birthday or age. Returns the family\'s birthdays, soonest first, with the next date, days until it, and the age they turn when the birth year is known. Read-only.';
+
+    protected string $title = 'List birthdays';
+
+    public function schema(JsonSchema $schema): array
+    {
+        return [
+            'within_days' => $schema->integer()->description('Only birthdays in the next N days (0 = today only). Omit for all.'),
+            ...$this->pageSchema($schema),
+        ];
+    }
+
+    public function handle(Request $request): Response|ResponseFactory
+    {
+        $request->validate(['within_days' => ['nullable', 'integer', 'min:0']]);
+        $within = $request->get('within_days');
+        // Same soonest-first list as the Birthdays page; filtered in PHP because days-until is derived.
+        $all = BirthdayDate::soonestFirst()
+            ->when($within !== null, fn ($c) => $c->filter(fn (BirthdayDate $b) => $b->daysUntil() <= (int) $within)->values());
+        $page = $this->page($all, $request);
+
+        return Response::structured([
+            'birthdays' => $page['items']->map(fn (BirthdayDate $b) => BirthdayData::payload($b))->values(),
+            'next_cursor' => $page['next_cursor'],
+        ]);
+    }
+}

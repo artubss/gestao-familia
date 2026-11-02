@@ -1,0 +1,271 @@
+@import 'tailwindcss';
+
+@plugin 'tailwindcss-animate';
+
+@source '../../vendor/laravel/framework/src/Illuminate/Pagination/resources/views/*.blade.php';
+
+@custom-variant dark (&:is(.dark *));
+/* A computer: wide AND a mouse/trackpad. iPads are wide but touch, and install like a phone (onboarding step 4). */
+@custom-variant desk (@media (min-width: 64rem) and (pointer: fine));
+
+@theme {
+    --font-sans: 'Inter', ui-sans-serif, system-ui, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji';
+    --font-heading: 'Playfair Display', ui-serif, Georgia, Cambria, 'Times New Roman', serif;
+    --font-mono: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+    --font-display: 'Bricolage Grotesque', ui-sans-serif, system-ui, sans-serif;
+
+    /* FamilyWell brand colours (design-app.pen variables), fixed on purpose: unlike the skin tokens below they
+       don't change with the theme. The onboarding is drawn in them (it runs before the app's skin matters),
+       like the logo's sun tile. bg-sun, text-ink, border-line, bg-paper, ... */
+    --color-sun: #ffdf00;
+    --color-sun-soft: #fff4a8;
+    --color-ink: #121100;
+    --color-ink-2: #2a2918;
+    --color-stone: #5e5b4e;
+    --color-paper: #f7f5ee;
+    --color-paper-2: #efece2;
+    --color-line: #e2ded1;
+    --color-garage: #0e0d07;
+    --color-garage-2: #1a1910;
+    --color-garage-line: #2e2c1f;
+    --color-garage-text: #b9b6a6;
+    --color-ok: #5bd38a;
+    --color-ok-soft: #dcf4e5;
+    --color-ok-ink: #1f7a45;
+
+    --radius-lg: var(--radius);
+    --radius-md: calc(var(--radius) - 2px);
+    --radius-sm: calc(var(--radius) - 4px);
+
+    --color-background: var(--background);
+    --color-foreground: var(--foreground);
+
+    --color-card: var(--card);
+    --color-card-foreground: var(--card-foreground);
+
+    --color-popover: var(--popover);
+    --color-popover-foreground: var(--popover-foreground);
+
+    --color-primary: var(--primary);
+    --color-primary-foreground: var(--primary-foreground);
+
+    /* Solid ACTION fills (primary buttons, FAB, active nav, toggles-on, checkbox fills, unread badge)
+       read from accent-strong, split out from --primary so a skin can make actions pop (e.g. amber)
+       while prominent TEXT (text-primary) stays ink. Defaults to primary, so the green skin is
+       unchanged. */
+    --color-accent-strong: var(--accent-strong);
+    --color-accent-strong-foreground: var(--accent-strong-foreground);
+
+    /* Icon TILES (the little square that holds a card's icon) read from --tile, split from action
+       fills so a skin can keep tiles a calm neutral while actions pop. Defaults to primary -> the
+       green skin's solid tiles are unchanged. */
+    --color-tile: var(--tile);
+    --color-tile-foreground: var(--tile-foreground);
+
+    --color-secondary: var(--secondary);
+    --color-secondary-foreground: var(--secondary-foreground);
+
+    --color-muted: var(--muted);
+    --color-muted-foreground: var(--muted-foreground);
+
+    --color-accent: var(--accent);
+    --color-accent-foreground: var(--accent-foreground);
+
+    /* Raw brand tokens (emitted at runtime by ThemeTokens) surfaced as utilities. These are the
+       DS-named surfaces/text ramps used directly in markup (bg-surface-card, bg-accent-subtle,
+       text-text-secondary, ...). Without these mappings Tailwind emits no utility and the class
+       silently no-ops, so every card that leans on bg-surface-card renders transparent. */
+    --color-surface: var(--surface);
+    --color-surface-card: var(--surface-card);
+    --color-surface-dark: var(--surface-dark);
+    --color-accent-subtle: var(--accent-subtle);
+    --color-accent-light: var(--accent-light);
+    --color-text-secondary: var(--text-secondary);
+    --color-text-muted: var(--text-muted);
+    --color-text-inverse: var(--text-inverse);
+
+    --color-destructive: var(--destructive);
+    --color-destructive-foreground: var(--destructive-foreground);
+
+    --color-border: var(--border);
+    --color-input: var(--input);
+    --color-ring: var(--ring);
+
+    --color-chart-1: var(--chart-1);
+    --color-chart-2: var(--chart-2);
+    --color-chart-3: var(--chart-3);
+    --color-chart-4: var(--chart-4);
+    --color-chart-5: var(--chart-5);
+
+    --color-sidebar: var(--sidebar-background);
+    --color-sidebar-foreground: var(--sidebar-foreground);
+    --color-sidebar-primary: var(--sidebar-primary);
+    --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+    --color-sidebar-accent: var(--sidebar-accent);
+    --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+    --color-sidebar-border: var(--sidebar-border);
+    --color-sidebar-ring: var(--sidebar-ring);
+}
+
+/*
+  The default border color has changed to `currentColor` in Tailwind CSS v4,
+  so we've added these compatibility styles to make sure everything still
+  looks the same as it did with Tailwind CSS v3.
+
+  If we ever want to remove these styles, we need to add an explicit border
+  color utility to any element that depends on these defaults.
+*/
+@layer base {
+    *,
+    ::after,
+    ::before,
+    ::backdrop,
+    ::file-selector-button {
+        border-color: var(--color-gray-200, currentColor);
+    }
+}
+
+/* Theme tokens (--background, --primary, --radius, --surface-card, ... and their .dark overrides) are
+   emitted at runtime by App\Support\Theming\ThemeTokens from resources/themes/<active>/theme.json and
+   injected AFTER this stylesheet (see app.blade.php), so the active skin owns the whole palette. The
+   @theme block above only maps those tokens to Tailwind utilities and defines the derived radius/font
+   scale. To change or add a look, edit/add a theme.json — no CSS here. */
+@layer base {
+    * {
+        @apply border-border;
+    }
+
+    body {
+        @apply bg-background text-foreground;
+    }
+
+    /* Touch screens behave like a native app: a long press on a label, title, tab or row doesn't select it or pop
+       iOS's Copy / Look Up menu (it kept selecting cards, tab labels and event titles, 2026-10-31). Desktop keeps
+       normal selection. Fields stay editable/selectable, and so do notes (copying from a note is a real use, even
+       read-only); anything else worth copying opts in with the `select-text` utility. */
+    @media (pointer: coarse) {
+        body {
+            -webkit-user-select: none;
+            user-select: none;
+            -webkit-touch-callout: none;
+        }
+        input,
+        textarea,
+        [contenteditable]:not([contenteditable='false']),
+        .ProseMirror,
+        .select-text {
+            -webkit-user-select: text;
+            user-select: text;
+            -webkit-touch-callout: default;
+        }
+    }
+
+    /* Onboarding pages (data-brand, set in app.tsx): the brand's light paper behind everything, dark mode or not. */
+    html[data-brand] body {
+        background-color: var(--color-paper);
+    }
+
+    h1,
+    h2,
+    h3 {
+        font-family: var(--font-heading);
+    }
+
+    /* Native date/time pickers. iOS Safari styles these as `-webkit-appearance: menulist-button` with an
+       intrinsic width, and because our form fields are grid/flex items whose min-width defaults to `auto`,
+       that intrinsic width becomes the item's minimum: the input ignores w-full, sticks out past its column
+       and the whole page scrolls sideways (seen on Vehicles > maintenance "last done" date). Reset the
+       appearance and drop the automatic minimum so they shrink to their container like text inputs. Global
+       on purpose: every module (vehicles, inventory, shopping, projects, tasks, spending) uses these natively,
+       whether through <Input type="date"> or a raw <input>. Width itself is left to the markup because the
+       analytics from/to range pickers sit inline and must keep their auto width. */
+    input[type='date'],
+    input[type='time'],
+    input[type='datetime-local'],
+    input[type='month'],
+    input[type='week'] {
+        appearance: none;
+        -webkit-appearance: none;
+        min-width: 0;
+        max-width: 100%;
+    }
+
+    /* iOS centres the picked value; left-align it so it lines up with neighbouring text inputs. */
+    input::-webkit-date-and-time-value {
+        text-align: left;
+    }
+}
+
+/* Live note editor (TipTap/ProseMirror). Scoped to .note-prose so it never leaks into other UI.
+   Renders markdown-lite as rich text: headings, bold, bullets and tappable task checkboxes. */
+.note-prose:focus {
+    outline: none;
+}
+.note-prose > * + * {
+    margin-top: 0.5rem;
+}
+.note-prose h1 {
+    font-size: 1.25rem;
+    line-height: 1.75rem;
+    font-weight: 600;
+    color: var(--primary);
+}
+.note-prose h2 {
+    font-size: 1.125rem;
+    line-height: 1.6rem;
+    font-weight: 600;
+    color: var(--primary);
+}
+.note-prose h3 {
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--primary);
+}
+.note-prose strong {
+    font-weight: 600;
+}
+.note-prose a {
+    color: var(--primary);
+    text-decoration: underline;
+}
+.note-prose ul,
+.note-prose ol {
+    padding-left: 1.25rem;
+}
+.note-prose ul {
+    list-style: disc;
+}
+.note-prose ol {
+    list-style: decimal;
+}
+/* Task list: checkbox + text on one row, no bullet. */
+.note-prose ul[data-type='taskList'] {
+    list-style: none;
+    padding-left: 0;
+}
+.note-prose ul[data-type='taskList'] li {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+}
+.note-prose ul[data-type='taskList'] li > label {
+    margin-top: 0.15rem;
+    user-select: none;
+}
+.note-prose ul[data-type='taskList'] li > div {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+.note-prose ul[data-type='taskList'] input[type='checkbox'] {
+    width: 1.05rem;
+    height: 1.05rem;
+    accent-color: var(--primary);
+}
+.note-prose p.is-editor-empty:first-child::before {
+    content: attr(data-placeholder);
+    color: var(--muted-foreground);
+    opacity: 0.6;
+    float: left;
+    height: 0;
+    pointer-events: none;
+}

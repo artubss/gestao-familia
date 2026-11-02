@@ -1,0 +1,20 @@
+{
+    "title_named": "Del «:name»",
+    "close": "Lukk",
+    "access_title": "Hvem har tilgang",
+    "owner": "Eier",
+    "you": "(deg)",
+    "no_access": "Ingen tilgang",
+    "can_edit": "Kan redigere",
+    "can_view": "Kan se",
+    "vis_family": "Familien",
+    "vis_invited": "Inviterte",
+    "vis_private": "Bare meg",
+    "vis_family_desc": "Alle i familien kan finne den. Roller under.",
+    "vis_invited_desc": "Bare de du inviterer kan finne den.",
+    "vis_private_desc": "Bare du kan se den.",
+    "link_title": "Lenke for visning",
+    "link_view_desc": "Alle med lenken kan se. Ingen konto trengs.",
+    "create_link": "Lag en lenke for visning",
+    "no_link": "Ingen lenke for visning ennå."
+}

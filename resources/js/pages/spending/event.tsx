@@ -1,0 +1,1925 @@
+import { useAddAction } from '@/lib/add-action';
+import { Head, Link, router, useForm, usePage } from '@inertiajs/react';
+import {
+    Archive,
+    ArrowRight,
+    Banknote,
+    BarChart3,
+    CalendarRange,
+    Camera,
+    Check,
+    ChevronDown,
+    ChevronLeft,
+    ChevronRight,
+    Copy,
+    CreditCard,
+    Landmark,
+    Link2,
+    Loader2,
+    MoreHorizontal,
+    MoreVertical,
+    Pencil,
+    Plus,
+    Store,
+    Tag,
+    Trash2,
+    User,
+    UserPlus,
+    Wallet,
+    X,
+} from 'lucide-react';
+import { createContext, FormEventHandler, useContext, useEffect, useMemo, useRef, useState } from 'react';
+
+import { CategoryIcon } from '@/components/category-icon';
+import { DuplicateWarning } from '@/components/duplicate-warning';
+import { GuestSheet, type GuestShareState } from '@/components/guest-sheet';
+import { IconPicker } from '@/components/icon-picker';
+import InputError from '@/components/input-error';
+import { useMemberColors } from '@/components/member-avatar';
+import { Picker } from '@/components/picker';
+import { ShareSheet, type ShareState } from '@/components/share-sheet';
+import { ShopMonthHint, type ShopTotals } from '@/components/shop-month-hint';
+import { ToggleRow } from '@/components/toggle-row';
+import { Button } from '@/components/ui/button';
+import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { ResponsiveModal } from '@/components/ui/responsive-modal';
+import { Textarea } from '@/components/ui/textarea';
+import { useCategorySuggest } from '@/hooks/use-category-suggest';
+import { useOptimistic } from '@/hooks/use-optimistic';
+import AppLayout from '@/layouts/app-layout';
+import { avatarColorFor } from '@/lib/avatar';
+import { catColor, categoryMap, catLabel, defaultCategoryKey, type CategoryDef } from '@/lib/categories';
+import { compressImage, makeThumbnail } from '@/lib/compress-image';
+import { appLocale, useT, type TFn } from '@/lib/i18n';
+import { currencyOptions, money, selectAllOnFocus } from '@/lib/money';
+import { save } from '@/lib/save';
+import { type BreadcrumbItem } from '@/types';
+
+type Member = { id: number; name: string };
+type EventT = {
+    id: number;
+    name: string;
+    currency: string;
+    displayCurrency: string; // saved display currency (falls back to base); persisted via the header selector
+    icon: string | null; // chosen lucide icon key for the list (null → Wallet default)
+    countInMonthly: boolean; // "Count in monthly spending" (list menu); the expense form's toggle defaults to it
+    total: number;
+    archived: boolean;
+    people: number; // total headcount (sum of participant weights), not row count
+    members: Member[];
+    categories: CategoryDef[]; // the family's dynamic categories (key/label/icon/colour)
+    currencies: string[];
+    rates: Record<string, number>; // base currency -> each supported currency (latest)
+    shops: string[]; // shop picker suggestions (names used on spends + Shopping-module shops)
+};
+type Spend = {
+    id: number;
+    amount: number; // original amount in `currency`
+    currency: string;
+    base_amount: number; // converted to the event currency
+    category: string;
+    store: string | null; // shop / merchant name
+    note: string | null;
+    receipts: { id: number; url: string; thumbUrl: string }[];
+    source: Source | null;
+    // Namespaced payer key ('u{id}' member / 'g{id}' guest) prefills the select; id/name/isGuest are for display.
+    payer: { key: string; id: number | null; name: string | null; isGuest: boolean };
+    // How the spend splits; shares list the subset (some) or per-person amounts (exact, spend currency).
+    split: 'all' | 'some' | 'exact';
+    shares: { key: string; amount: number | null }[];
+    spent_at: string;
+    count_in_monthly: boolean | null; // per-expense override; null = follow the list
+};
+type Source = { id: number; name: string; type: string };
+// labelKey resolves via t() at render time (this is a module-level const, so it can't call the hook).
+const SOURCE_TYPE_META = [
+    { key: 'cash', labelKey: 'spending.source_cash', icon: Banknote },
+    { key: 'card', labelKey: 'spending.source_card', icon: CreditCard },
+    { key: 'bank', labelKey: 'spending.source_bank', icon: Landmark },
+    { key: 'other', labelKey: 'spending.source_other', icon: Wallet },
+] as const;
+const sourceTypeLabel = (t: TFn, type: string) => t(SOURCE_TYPE_META.find((s) => s.key === type)?.labelKey ?? 'spending.source_other');
+// Participant ids are namespaced strings ('u{id}' for family members, 'g{id}' for guests) so users
+// and guests never collide in one balance sheet.
+type Balance = { id: string; name: string; net: number };
+type Suggestion = { from: { id: string; name: string }; to: { id: string; name: string }; amount: number };
+type Participant = { key: string; name: string; kind: 'member' | 'guest'; weight: number; coveredBy: string | null };
+// fromKey/toKey are participant keys (u{id}/g{id}) to prefill the edit drawer; from/to are display names.
+type Transfer = { id: number; from: string; to: string; fromKey: string; toKey: string; amount: number; date: string; note: string | null };
+// Personal breakdown for the viewer (base cents). null when the viewer isn't a participant.
+type MySummary = { paid: number; share: number; sent: number; received: number; net: number } | null;
+
+// Soft, warm per-person avatar palette (borrowed from the reference). Colours are assigned by the
+// participant's position (see AvatarColorContext) so everyone in an event gets a distinct colour;
+// personColor() is only the fallback for a name that isn't a current participant.
+const PERSON_COLORS = [
+    { bg: '#DCE7D5', fg: '#3B5233' }, // sage
+    { bg: '#D9E2EC', fg: '#3A4A5B' }, // slate blue
+    { bg: '#EAD9DE', fg: '#6B4652' }, // dusty rose
+    { bg: '#E7DECF', fg: '#5C513A' }, // sand
+    { bg: '#E1DAE9', fg: '#4E4460' }, // muted violet
+    { bg: '#E6DCCF', fg: '#6B4E3D' }, // clay
+    { bg: '#D5E4E2', fg: '#33544F' }, // teal
+    { bg: '#EDE0CC', fg: '#6B5A32' }, // wheat
+    { bg: '#E3DCF0', fg: '#463C63' }, // lavender
+    { bg: '#E9D7CE', fg: '#6E4A3A' }, // terracotta
+    { bg: '#D8E3D0', fg: '#425235' }, // olive
+    { bg: '#DBDFEA', fg: '#3D4657' }, // periwinkle
+] as const;
+const personColor = (name: string) => {
+    let h = 0;
+    for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
+    return PERSON_COLORS[h % PERSON_COLORS.length];
+};
+// Name -> colour for the current event's participants, so avatars are distinct (and stable) everywhere.
+const AvatarColorContext = createContext<Map<string, { bg: string; fg: string }> | null>(null);
+function PersonAvatar({ name, className = 'size-9 text-sm' }: { name: string; className?: string }) {
+    const map = useContext(AvatarColorContext);
+    const c = map?.get(name) ?? personColor(name);
+    return (
+        <span
+            className={`flex shrink-0 items-center justify-center rounded-full font-semibold ${className}`}
+            style={{ backgroundColor: c.bg, color: c.fg }}
+        >
+            {(name || '?').charAt(0).toUpperCase()}
+        </span>
+    );
+}
+
+// labelKey resolves via t() at render time (this is a module-level const, so it can't call the hook).
+const TABS = [
+    { key: 'expenses', labelKey: 'spending.tab_expenses' },
+    { key: 'transfers', labelKey: 'spending.tab_transfers' },
+    { key: 'balances', labelKey: 'spending.tab_balances' },
+    { key: 'settings', labelKey: 'spending.tab_settings' },
+] as const;
+type TabKey = (typeof TABS)[number]['key'];
+
+const today = () => new Date().toISOString().slice(0, 10);
+
+// Relative day header for the spend log: Today / Yesterday / a dated label.
+const dayLabel = (t: TFn, date: string) => {
+    const d = new Date(date + 'T00:00:00');
+    const now = new Date();
+    now.setHours(0, 0, 0, 0);
+    const diff = Math.round((now.getTime() - d.getTime()) / 86_400_000);
+    if (diff === 0) return t('dashboard.today');
+    if (diff === 1) return t('spending.yesterday');
+    return d.toLocaleDateString(appLocale(), { weekday: 'short', month: 'short', day: 'numeric' });
+};
+
+export default function Event({
+    event,
+    spends,
+    sources,
+    balances,
+    suggestions,
+    participants,
+    transfers,
+    mySummary,
+    familyId,
+    share,
+    guestShare,
+    scanEnabled,
+    shopTotals,
+    aiCategorize = false,
+    moveTargets = [],
+}: {
+    event: EventT;
+    spends: Spend[];
+    sources: Source[];
+    balances: Balance[];
+    suggestions: Suggestion[];
+    participants: Participant[];
+    transfers: Transfer[];
+    mySummary: MySummary;
+    familyId: number;
+    share: ShareState;
+    guestShare: GuestShareState;
+    scanEnabled: boolean;
+    shopTotals: ShopTotals; // month-to-date per shop for the hint under the shop picker
+    aiCategorize?: boolean; // TypeSafe key present => the note suggests a category as you type
+    moveTargets?: { id: number; name: string; currency: string }[];
+}) {
+    const authId = usePage<{ auth: { user: { id: number } } }>().props.auth.user.id;
+    const t = useT();
+    // Dynamic categories: a key→def lookup for rendering, and the catch-all "other" as the new-spend default.
+    const catMap = categoryMap(event.categories);
+    const defaultCategory = defaultCategoryKey(event.categories);
+    const [tab, setTab] = useState<TabKey>('expenses');
+    const [adding, setAdding] = useState(false);
+    const [sharing, setSharing] = useState(false);
+    const [guestSharing, setGuestSharing] = useState(false);
+    // When set, the form is editing this spend id instead of creating a new one.
+    const [editing, setEditing] = useState<number | null>(null);
+    // "Advanced" section in the edit form + the "move to another list" flow (chosen target id, or '').
+    const [advancedOpen, setAdvancedOpen] = useState(false);
+    const [moveTarget, setMoveTarget] = useState<string>('');
+    const [moving, setMoving] = useState(false);
+    const [moveError, setMoveError] = useState<string | null>(null);
+    const editingSpend = editing ? spends.find((s) => s.id === editing) : undefined;
+    const doMove = () => {
+        if (!editing || !moveTarget || moving) return;
+        setMoving(true);
+        setMoveError(null);
+        // Server redirects to the target list on success; resets split + re-converts the amount there.
+        // On failure (e.g. a guest-paid expense) surface the message instead of silently doing nothing.
+        router.post(
+            route('spending.spends.move', editing),
+            { target_event_id: Number(moveTarget) },
+            {
+                preserveScroll: true,
+                onError: (errors) => setMoveError(errors.target_event_id ?? t('spending.move_failed')),
+                onFinish: () => setMoving(false),
+            },
+        );
+    };
+    // Receipt photos being viewed in the lightbox overlay, and which one is showing.
+    const [viewing, setViewing] = useState<string[] | null>(null);
+    const [viewIndex, setViewIndex] = useState(0);
+    const openLightbox = (urls: string[], index = 0) => {
+        setViewing(urls);
+        setViewIndex(index);
+    };
+    // Display currency is cosmetic (it converts the base-currency figures for viewing) but PERSISTED on
+    // the list, so the choice sticks across reloads for everyone. Seed from the saved value; changing it
+    // saves via updateEvent.
+    const [display, setDisplay] = useState(event.displayCurrency);
+    const fmt = (baseCents: number) => money(Math.round(baseCents * (event.rates[display] ?? 1)), display);
+    const changeDisplay = (v: string) => {
+        setDisplay(v); // optimistic: reflect the choice immediately
+        void save('patch', route('spending.events.update', event.id), { display_currency: v });
+    };
+
+    // The list's lucide icon (shown left of the title). Optimistic like the title; null → Wallet default.
+    const [icon, setIcon] = useState(event.icon);
+    useEffect(() => setIcon(event.icon), [event.icon]);
+    const changeIcon = (key: string | null) => {
+        setIcon(key); // reflect the choice immediately
+        void save('patch', route('spending.events.update', event.id), { icon: key });
+    };
+
+    // Inline title editing. `title` mirrors the server value (optimistic on save, re-synced on reload).
+    const amountRef = useRef<HTMLInputElement>(null); // focused when the spend drawer opens, so the numeric pad shows
+    const [editingTitle, setEditingTitle] = useState(false);
+    const [title, setTitle] = useState(event.name);
+    useEffect(() => setTitle(event.name), [event.name]);
+    const saveTitle = () => {
+        const name = title.trim();
+        setEditingTitle(false);
+        if (name && name !== event.name) {
+            router.patch(route('spending.events.update', event.id), { name }, { preserveScroll: true });
+        } else {
+            setTitle(event.name); // ignore an empty or unchanged rename
+        }
+    };
+
+    // Optimistically removed spends: the row vanishes on tap, before the server confirms the delete.
+    const removedSpends = useOptimistic<boolean>();
+    // Archive toggle: the menu label flips on tap, not after the round trip.
+    const archivedOpt = useOptimistic<boolean>();
+    const archived = archivedOpt.get(event.id, event.archived);
+    // The nav's "+" adds to this list, except when it's archived (read-only): then it falls back to the global sheet.
+    useAddAction(archived ? null : () => setAdding(true));
+    const toggleArchived = () => {
+        archivedOpt.set(event.id, !archived);
+        void save('patch', route('spending.events.update', event.id), { archived: !archived }).then(() => archivedOpt.clear(event.id));
+    };
+    const monthlyOpt = useOptimistic<boolean>();
+    const inMonthly = monthlyOpt.get(event.id, event.countInMonthly);
+    // Mark-paid: the suggestion row disappears on tap (keyed from→to); the server re-derives balances.
+    const settledOpt = useOptimistic<boolean>();
+    const visibleSuggestions = suggestions.filter((s) => !settledOpt.get(`${s.from.id}-${s.to.id}`, false));
+    // Headcount +/- and covered-by: overlay the tapped values on the participant so the stepper moves
+    // instantly instead of waiting for the reload (the split maths reconcile from the server response).
+    const participantOpt = useOptimistic<{ weight: number; coveredBy: string | null }>();
+    const settingsParticipants = participants.map((p) => ({ ...p, ...participantOpt.get(p.key, { weight: p.weight, coveredBy: p.coveredBy }) }));
+
+    // Spends arrive newest-first, so a sequential pass groups them into contiguous days. Optimistically
+    // deleted rows are filtered out first so they disappear immediately (per-day subtotals and the
+    // header count follow); server-computed aggregates (event.total, balances) reconcile on reload.
+    const visibleSpends = spends.filter((s) => !removedSpends.get(s.id, false));
+    const dayGroups = visibleSpends.reduce<{ date: string; spends: Spend[]; total: number }[]>((groups, s) => {
+        const last = groups[groups.length - 1];
+        if (last && last.date === s.spent_at) {
+            last.spends.push(s);
+            last.total += s.base_amount;
+        } else {
+            groups.push({ date: s.spent_at, spends: [s], total: s.base_amount });
+        }
+        return groups;
+    }, []);
+
+    const breadcrumbs: BreadcrumbItem[] = [
+        { title: t('nav.spending'), href: '/m/spending' },
+        { title: event.name, href: route('spending.show', event.id) },
+    ];
+
+    // Share + guest-link controls live in the global header (right of the breadcrumbs) for every entity.
+    const headerActions = (
+        <>
+            <button
+                type="button"
+                onClick={() => setSharing(true)}
+                aria-label={t('spending.share_with_family')}
+                className="border-border text-primary hover:bg-surface flex size-9 items-center justify-center rounded-lg border transition-colors"
+            >
+                <UserPlus className="size-4.5" />
+            </button>
+            <button
+                type="button"
+                onClick={() => setGuestSharing(true)}
+                aria-label={t('spending.guest_link')}
+                className="border-border text-primary hover:bg-surface relative flex size-9 items-center justify-center rounded-lg border transition-colors"
+            >
+                <Link2 className="size-4.5" />
+                {guestShare?.enabled && <span className="bg-accent-strong absolute -top-0.5 -right-0.5 size-2 rounded-full" />}
+            </button>
+            <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                    <button
+                        type="button"
+                        aria-label={t('spending.event_options')}
+                        className="border-border text-primary hover:bg-surface flex size-9 items-center justify-center rounded-lg border transition-colors"
+                    >
+                        <MoreHorizontal className="size-4.5" />
+                    </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-52">
+                    <DropdownMenuItem onSelect={() => setTimeout(() => setEditingTitle(true), 0)}>
+                        <Pencil className="size-4" /> {t('spending.rename_event')}
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem onSelect={toggleArchived}>
+                        <Archive className="size-4" /> {t(archived ? 'spending.unarchive_event' : 'spending.archive_event')}
+                    </DropdownMenuItem>
+                    {/* List-level "count in monthly spending": expenses without their own override follow it. */}
+                    <DropdownMenuItem
+                        onSelect={() => {
+                            monthlyOpt.set(event.id, !inMonthly);
+                            void save('patch', route('spending.events.update', event.id), { count_in_monthly: !inMonthly }).then(() =>
+                                monthlyOpt.clear(event.id),
+                            );
+                        }}
+                    >
+                        <CalendarRange className="size-4" />
+                        <span className="flex-1">{t('spending.count_in_monthly')}</span>
+                        {inMonthly && <Check className="size-4" />}
+                    </DropdownMenuItem>
+                </DropdownMenuContent>
+            </DropdownMenu>
+        </>
+    );
+
+    // Live sync: a change from anyone in the family reloads this page's data. Best-effort.
+    useEffect(() => {
+        const echo = window.Echo;
+        if (!echo) return;
+        echo.private(`family.${familyId}`).listen('.SpendingChanged', () => router.reload());
+        return () => echo.leave(`family.${familyId}`);
+    }, [familyId]);
+
+    // Currency choices as Picker options: every supported currency for the expense form; the header display
+    // switcher only offers the ones we have a rate for (a missing rate would show the base figure under the
+    // wrong currency).
+    const currencyChoices = currencyOptions(event.currencies);
+    const displayChoices = currencyChoices.filter((o) => o.value in event.rates);
+    const allKeys = participants.map((p) => p.key);
+    const form = useForm<{
+        amount: string;
+        currency: string;
+        category: string;
+        payer_key: string;
+        source_id: number | null;
+        note: string;
+        store: string;
+        spent_at: string;
+        receipts: File[];
+        receipts_thumb: File[];
+        remove_receipt_ids: number[];
+        split: 'all' | 'some' | 'exact';
+        share_keys: string[];
+        share_amounts: Record<string, string>;
+        add_anyway: boolean; // set on "Add anyway" after the server's soft duplicate warning (errors.add_anyway)
+        // The toggle's visible state. Always sent; the server stores null (= follow the list) when it
+        // equals the list's setting, so only a real deviation pins the expense (SpendEvent::buildSpend).
+        count_in_monthly: boolean;
+    }>({
+        amount: '',
+        currency: event.currency,
+        category: defaultCategory,
+        payer_key: 'u' + authId,
+        source_id: null,
+        note: '',
+        store: '',
+        spent_at: today(),
+        receipts: [],
+        receipts_thumb: [],
+        remove_receipt_ids: [],
+        split: 'all',
+        share_keys: allKeys,
+        share_amounts: {},
+        add_anyway: false,
+        count_in_monthly: event.countInMonthly,
+    });
+
+    // --- Per-expense split helpers (used by the Split section of the form) ---
+    const toggleShareKey = (key: string) =>
+        form.setData(
+            'share_keys',
+            form.data.share_keys.includes(key) ? form.data.share_keys.filter((k) => k !== key) : [...form.data.share_keys, key],
+        );
+    // Keys the user typed into by hand. Their values are pinned; everyone else's
+    // share is auto-recomputed so the leftover always splits equally among the untouched.
+    const [lockedKeys, setLockedKeys] = useState<string[]>([]);
+    const setShareAmount = (key: string, val: string) => {
+        const clean = val.replace(/,/g, '.').replace(/[^\d.]/g, '');
+        const locked = lockedKeys.includes(key) ? lockedKeys : [...lockedKeys, key];
+        const amounts: Record<string, string> = { ...form.data.share_amounts, [key]: clean };
+        const total = Math.round(Number(form.data.amount || 0) * 100);
+        const lockedCents = locked.reduce((s, k) => s + Math.round(Number(amounts[k] || 0) * 100), 0);
+        const rest = participants.filter((p) => !locked.includes(p.key));
+        if (rest.length > 0) {
+            const leftover = Math.max(0, total - lockedCents); // overspent -> untouched owe 0, remaining shows "over"
+            const base = Math.floor(leftover / rest.length);
+            const rem = leftover - base * rest.length;
+            rest.forEach((p, i) => (amounts[p.key] = ((base + (i < rem ? 1 : 0)) / 100).toFixed(2)));
+        }
+        setLockedKeys(locked);
+        form.setData('share_amounts', amounts);
+    };
+    // Fill exact amounts by splitting the total equally (cents distributed to the first people).
+    const splitEqually = () => {
+        const total = Math.round(Number(form.data.amount || 0) * 100);
+        const n = participants.length;
+        if (n === 0) return;
+        const base = Math.floor(total / n);
+        const rem = total - base * n;
+        const amounts: Record<string, string> = {};
+        participants.forEach((p, i) => (amounts[p.key] = ((base + (i < rem ? 1 : 0)) / 100).toFixed(2)));
+        setLockedKeys([]); // back to a clean equal split; nothing pinned
+        form.setData('share_amounts', amounts);
+    };
+    const amountCents = Math.round(Number(form.data.amount || 0) * 100);
+    const exactSumCents = participants.reduce((sum, p) => sum + Math.round(Number(form.data.share_amounts[p.key] || 0) * 100), 0);
+    const remainingCents = amountCents - exactSumCents;
+    const splitValid =
+        form.data.split === 'all' ||
+        (form.data.split === 'some' && form.data.share_keys.length > 0) ||
+        (form.data.split === 'exact' && exactSumCents > 0 && remainingCents === 0);
+    // Build the shares payload the backend expects from the split mode.
+    const withShares = <T extends Record<string, unknown>>(d: T) => {
+        const shares =
+            form.data.split === 'some'
+                ? form.data.share_keys.map((key) => ({ key }))
+                : form.data.split === 'exact'
+                  ? participants.map((p) => ({ key: p.key, amount: Number(form.data.share_amounts[p.key] || 0) }))
+                  : [];
+        return { ...d, split: form.data.split, shares };
+    };
+
+    // Inline "paid with" source creation. New sources appear in `sources` after the create reloads;
+    // we then auto-select the freshest one.
+    const [sourceModalOpen, setSourceModalOpen] = useState(false);
+    const [newSource, setNewSource] = useState<{ name: string; type: string }>({ name: '', type: 'card' });
+    const [savingSource, setSavingSource] = useState(false);
+    const [justAddedSource, setJustAddedSource] = useState(false);
+    const createSource = () => {
+        if (!newSource.name.trim()) return;
+        setSavingSource(true);
+        router.post(route('spending.sources.store'), newSource, {
+            preserveScroll: true,
+            preserveState: true,
+            onSuccess: () => {
+                setNewSource({ name: '', type: 'card' });
+                setSourceModalOpen(false);
+                setJustAddedSource(true);
+            },
+            onFinish: () => setSavingSource(false),
+        });
+    };
+    useEffect(() => {
+        if (justAddedSource && sources.length) {
+            form.setData('source_id', sources[sources.length - 1].id);
+            setJustAddedSource(false);
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [sources.length, justAddedSource]);
+
+    // Existing receipts of the spend being edited, minus any the user has marked for removal.
+    const existingReceipts = editing
+        ? (spends.find((s) => s.id === editing)?.receipts ?? []).filter((r) => !form.data.remove_receipt_ids.includes(r.id))
+        : [];
+
+    const closeForm = () => {
+        form.reset();
+        form.clearErrors(); // else a duplicate warning would greet the next open
+        setEditing(null);
+        setAdding(false);
+        setAdvancedOpen(false);
+        setMoveTarget('');
+        setMoveError(null);
+    };
+
+    // addAnyway: the user confirmed the server's soft duplicate warning, so the re-post skips the check.
+    const submit = (addAnyway = false) => {
+        // If a "move to another list" target is picked in Advanced, Save performs the move (not the
+        // in-place update) — that's what the footer button reads as, so tapping it does what it says.
+        if (editing && moveTarget) {
+            doMove();
+            return;
+        }
+        const opts = { preserveScroll: true, onSuccess: () => closeForm() };
+        if (editing) {
+            // PHP never parses a multipart body on a PATCH request, so a receipt upload on edit must
+            // go as POST + _method spoofing. forceFormData makes it multipart so _method is read as a
+            // form field for the override.
+            form.transform((d) => ({ ...withShares(d), _method: 'patch', add_anyway: addAnyway }));
+            form.post(route('spending.spends.update', editing), { ...opts, forceFormData: true });
+        } else {
+            form.transform((d) => ({ ...withShares(d), add_anyway: addAnyway }));
+            form.post(route('spending.spends.store', event.id), opts);
+        }
+    };
+    const submitSpend: FormEventHandler = (e) => {
+        e.preventDefault();
+        submit();
+    };
+
+    // Archived lists are read-only (server: SpendEvent::assertWritable), so row taps don't open editors.
+    const startEdit = (s: Spend) => {
+        if (archived) return;
+        form.setData({
+            amount: (s.amount / 100).toString(),
+            currency: s.currency,
+            category: s.category,
+            payer_key: s.payer.key,
+            source_id: s.source?.id ?? null,
+            note: s.note ?? '',
+            store: s.store ?? '',
+            spent_at: s.spent_at,
+            receipts: [],
+            receipts_thumb: [],
+            remove_receipt_ids: [],
+            split: s.split,
+            share_keys: s.split === 'some' ? s.shares.map((x) => x.key) : allKeys,
+            share_amounts: s.split === 'exact' ? Object.fromEntries(s.shares.map((x) => [x.key, String(x.amount ?? 0)])) : {},
+            count_in_monthly: s.count_in_monthly ?? event.countInMonthly,
+        });
+        setEditing(s.id);
+        setAdding(true);
+    };
+
+    const startAdd = () => {
+        form.reset();
+        // reset() restores the defaults captured at mount; the list setting may have changed since.
+        form.setData('count_in_monthly', event.countInMonthly);
+        setEditing(null);
+        setAdding(true);
+    };
+
+    // Scan a receipt photo: the endpoint reads it into prefill fields, then we open the New-spend drawer
+    // pre-filled (and attach the photo as the receipt) so the user just reviews and Saves.
+    const scanInputRef = useRef<HTMLInputElement>(null);
+    const [scanning, setScanning] = useState(false);
+    const [scanError, setScanError] = useState<string | null>(null);
+
+    const handleScanFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        e.target.value = ''; // let the same photo be picked again after an error
+        if (!file) return;
+        setScanError(null);
+        setScanning(true);
+        try {
+            const photo = await compressImage(file, 800_000);
+            const photoThumb = await makeThumbnail(file, 640);
+            const body = new FormData();
+            body.append('photo', photo);
+            // Laravel validates the XSRF-TOKEN cookie via this header (no axios in this app).
+            const xsrf = decodeURIComponent(document.cookie.match(/(?:^|; )XSRF-TOKEN=([^;]+)/)?.[1] ?? '');
+            // Relative URL: same-origin fetch must target the origin the user is on so the session cookie is sent.
+            const res = await fetch(route('spending.scan', undefined, false), {
+                method: 'POST',
+                headers: { 'X-XSRF-TOKEN': xsrf, Accept: 'application/json' },
+                body,
+                credentials: 'same-origin',
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.message || t('spending.scan_error_default'));
+            form.reset();
+            form.setData({
+                amount: data.amount != null ? String(data.amount) : '',
+                currency: data.currency ?? event.currency,
+                category: data.category ?? defaultCategory,
+                payer_key: 'u' + authId,
+                source_id: null,
+                note: data.note ?? '',
+                store: data.store ?? '', // merchant read off the receipt header
+                spent_at: data.date ?? today(),
+                receipts: [photo], // keep the scanned photo attached to the spend
+                receipts_thumb: photoThumb ? [photoThumb] : [],
+                remove_receipt_ids: [],
+                split: 'all',
+                share_keys: allKeys,
+                share_amounts: {},
+                count_in_monthly: event.countInMonthly,
+            });
+            setEditing(null);
+            setAdding(true);
+        } catch (err) {
+            setScanError(err instanceof Error ? err.message : t('spending.scan_error_default'));
+        } finally {
+            setScanning(false);
+        }
+    };
+
+    // Type-ahead category from the note (see useCategorySuggest). Active while the sheet is open.
+    const suggest = useCategorySuggest({
+        enabled: aiCategorize && (adding || editing !== null),
+        note: form.data.note,
+        amount: form.data.amount,
+        currency: form.data.currency,
+        eventId: event.id,
+        category: form.data.category,
+        defaultKey: defaultCategory,
+        setCategory: (key) => form.setData('category', key),
+    });
+
+    const duplicate = (s: Spend) => router.post(route('spending.spends.duplicate', s.id), {}, { preserveScroll: true });
+    const remove = (s: Spend) => {
+        removedSpends.set(s.id, true); // hide the row now; server response reconciles totals/balances
+        void save('delete', route('spending.spends.destroy', s.id)).then(() => removedSpends.clear(s.id));
+    };
+
+    // Settle-up records a payment between two participants (members or guests). Suggestion ids are
+    // already namespaced keys, so they pass straight through. One-click has no note.
+    const markPaid = (s: Suggestion) => {
+        const key = `${s.from.id}-${s.to.id}`;
+        settledOpt.set(key, true); // hide the suggestion now; reappears only if the settle fails
+        // add_anyway: a suggestion is the outstanding balance, so it can't be the duplicate the check guards against.
+        void save('post', route('spending.settle', event.id), { from_key: s.from.id, to_key: s.to.id, amount: s.amount, add_anyway: true }).then(() =>
+            settledOpt.clear(key),
+        );
+    };
+
+    // Split settings (Settings tab). Only the owner manages them; the server re-validates regardless.
+    const canManageSettings = share?.canManage ?? false;
+    const patchParticipant = (p: Participant, weight: number, coveredBy: string | null) => {
+        participantOpt.set(p.key, { weight, coveredBy });
+        void save('patch', route('spending.participants.update', { event: event.id, key: p.key }), { weight, covered_by: coveredBy ?? '' }).then(() =>
+            participantOpt.clear(p.key),
+        );
+    };
+    const setWeight = (p: Participant, w: number) => patchParticipant(p, Math.max(1, w), p.coveredBy);
+    const setCover = (p: Participant, key: string | null) => patchParticipant(p, p.weight, key);
+
+    // Avatar colour per participant. Family members use their global family colour (same everywhere in
+    // the app); guests, who aren't family members, get a distinct colour from the warm fallback palette.
+    const memberColorsMap = useMemberColors();
+    const avatarColors = useMemo(() => {
+        const m = new Map<string, { bg: string; fg: string }>();
+        let guestI = 0;
+        participants.forEach((p) => {
+            if (m.has(p.name)) return;
+            if (p.kind === 'member') {
+                const [bg, fg] = avatarColorFor(memberColorsMap, Number(p.key.slice(1)), p.name);
+                m.set(p.name, { bg, fg });
+            } else {
+                m.set(p.name, PERSON_COLORS[guestI++ % PERSON_COLORS.length]);
+            }
+        });
+        return m;
+    }, [participants, memberColorsMap]);
+
+    // Record a transfer (settle-up payment) straight from the Transfers tab. from/to are participant
+    // keys (members or guests); amounts are in the event's currency. Optional note shown in the list.
+    const [recording, setRecording] = useState(false);
+    const [editingTransfer, setEditingTransfer] = useState<number | null>(null); // null = recording a new one
+    // add_anyway: a form field (as in the expense form) so errors.add_anyway is typed; transform sets it.
+    const transferForm = useForm({ from_key: '', to_key: '', amount: '', note: '', add_anyway: false });
+    const transferValid =
+        !!transferForm.data.from_key &&
+        !!transferForm.data.to_key &&
+        transferForm.data.from_key !== transferForm.data.to_key &&
+        Number(transferForm.data.amount) > 0;
+    const removedTransfers = useOptimistic<boolean>();
+    const visibleTransfers = transfers.filter((tr) => !removedTransfers.get(tr.id, false));
+    const openRecord = () => {
+        transferForm.reset();
+        transferForm.clearErrors();
+        setEditingTransfer(null);
+        setRecording(true);
+    };
+    const startEditTransfer = (tr: Transfer) => {
+        if (archived) return;
+        transferForm.clearErrors();
+        transferForm.setData({ from_key: tr.fromKey, to_key: tr.toKey, amount: String(tr.amount / 100), note: tr.note ?? '', add_anyway: false });
+        setEditingTransfer(tr.id);
+        setRecording(true);
+    };
+    const closeTransfer = () => {
+        setRecording(false);
+        setEditingTransfer(null);
+        transferForm.reset();
+        transferForm.clearErrors(); // else a duplicate warning would greet the next open
+    };
+    // addAnyway: the user confirmed the server's "already recorded?" warning (errors.add_anyway).
+    const recordTransfer = (addAnyway = false) => {
+        transferForm.transform((d) => ({
+            from_key: d.from_key,
+            to_key: d.to_key,
+            amount: Math.round(Number(d.amount) * 100),
+            note: d.note,
+            add_anyway: addAnyway,
+        }));
+        const opts = { preserveScroll: true, onSuccess: closeTransfer };
+        if (editingTransfer) transferForm.patch(route('spending.transfers.update', editingTransfer), opts);
+        else transferForm.post(route('spending.settle', event.id), opts);
+    };
+    // Delete goes to the 30-day trash (Settings > Recently deleted), so it's reversible; the row hides now.
+    const deleteTransfer = (id: number) => {
+        if (!confirm(t('spending.confirm_delete_transfer'))) return;
+        closeTransfer();
+        removedTransfers.set(id, true);
+        void save('delete', route('spending.transfers.destroy', id)).then(() => removedTransfers.clear(id));
+    };
+
+    return (
+        <AvatarColorContext.Provider value={avatarColors}>
+            <AppLayout breadcrumbs={breadcrumbs} actions={headerActions}>
+                <Head title={event.name} />
+                <div className="mx-auto w-full max-w-2xl">
+                    {/* Sticky editorial header: the serif title, the display currency, and the tab bar that
+                    stays put while a tab's content scrolls under it. */}
+                    <header className="bg-background/95 sticky top-0 z-20 px-4 pt-3 backdrop-blur-sm">
+                        <div className="mb-3 flex items-center justify-between gap-2">
+                            {/* List icon: tap to pick a lucide icon for this list (defaults to Wallet). */}
+                            <IconPicker
+                                value={icon}
+                                onChange={changeIcon}
+                                className="size-9"
+                                iconClassName="size-4.5"
+                                ariaLabel={t('spending.change_icon')}
+                            />
+                            {editingTitle ? (
+                                <input
+                                    autoFocus
+                                    value={title}
+                                    onChange={(e) => setTitle(e.target.value)}
+                                    onBlur={saveTitle}
+                                    onKeyDown={(e) => {
+                                        if (e.key === 'Enter') saveTitle();
+                                        if (e.key === 'Escape') {
+                                            setTitle(event.name);
+                                            setEditingTitle(false);
+                                        }
+                                    }}
+                                    aria-label={t('spending.event_title_aria')}
+                                    className="font-heading text-primary border-border focus:border-accent min-w-0 flex-1 rounded-lg border bg-transparent px-1 text-2xl outline-none"
+                                />
+                            ) : (
+                                <button
+                                    type="button"
+                                    onClick={() => setEditingTitle(true)}
+                                    className="group flex min-w-0 items-center gap-2 text-left"
+                                    aria-label={t('spending.rename_event')}
+                                >
+                                    <h1 className="font-heading text-primary truncate text-2xl">{title}</h1>
+                                    <Pencil className="text-muted-foreground group-hover:text-primary size-4 shrink-0 transition-colors" />
+                                </button>
+                            )}
+                            <div className="flex shrink-0 items-center gap-2">
+                                {/* Header switcher: a fixed-size slot with the Picker floating in it, so opening the
+                                    list overlays the page instead of pushing the title and tabs down. */}
+                                <div className="relative h-[42px] w-[120px]">
+                                    <div className="absolute top-0 right-0 z-30 w-[120px] shadow-sm">
+                                        <Picker
+                                            options={displayChoices}
+                                            selected={[display]}
+                                            onChange={([c]) => c && changeDisplay(c)}
+                                            fallbackIcon={Banknote}
+                                            ariaLabel={t('spending.display_currency')}
+                                        />
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <nav data-scroll-x className="-mb-px flex gap-1 overflow-x-auto">
+                            {TABS.map((tabItem) => {
+                                const active = tab === tabItem.key;
+                                return (
+                                    <button
+                                        key={tabItem.key}
+                                        type="button"
+                                        onClick={() => setTab(tabItem.key)}
+                                        className={`relative shrink-0 px-3 pt-1 pb-2.5 text-sm font-medium transition-colors ${
+                                            active ? 'text-primary' : 'text-muted-foreground hover:text-primary'
+                                        }`}
+                                    >
+                                        {t(tabItem.labelKey)}
+                                        {tabItem.key === 'transfers' && visibleTransfers.length > 0 && (
+                                            <span className="text-muted-foreground ml-1 tabular-nums">{visibleTransfers.length}</span>
+                                        )}
+                                        {active && <span className="bg-accent-strong absolute inset-x-3 -bottom-px h-0.5 rounded-full" />}
+                                    </button>
+                                );
+                            })}
+                        </nav>
+                    </header>
+
+                    <div className="flex flex-col gap-4 p-4">
+                        {/* EXPENSES — total */}
+                        {tab === 'expenses' && (
+                            <div className="bg-surface-dark text-text-inverse rounded-2xl p-5">
+                                <div className="text-accent-light text-xs tracking-widest uppercase">{t('spending.total_spent')}</div>
+                                <div className="font-heading mt-1 text-4xl">{fmt(event.total)}</div>
+                                <div className="text-accent-light mt-1 text-sm">
+                                    {event.people} {t(event.people === 1 ? 'spending.person_one' : 'spending.person_other')} · {visibleSpends.length}{' '}
+                                    {t(visibleSpends.length === 1 ? 'spending.spend_one' : 'spending.spend_other')}
+                                </div>
+                            </div>
+                        )}
+                        {share && <ShareSheet open={sharing} onOpenChange={setSharing} share={share} eventName={event.name} />}
+                        {guestShare && (
+                            <GuestSheet open={guestSharing} onOpenChange={setGuestSharing} guestShare={guestShare} entityName={event.name} />
+                        )}
+
+                        {/* New payment source — bottom drawer on mobile, centered overlay on desktop. */}
+                        <ResponsiveModal
+                            open={sourceModalOpen}
+                            onOpenChange={setSourceModalOpen}
+                            title={t('spending.new_payment_source')}
+                            description={t('spending.new_source_desc')}
+                        >
+                            <div className="flex flex-col gap-4">
+                                <div className="grid gap-1.5">
+                                    <Label htmlFor="source-name">{t('spending.name')}</Label>
+                                    <Input
+                                        id="source-name"
+                                        autoFocus
+                                        value={newSource.name}
+                                        onChange={(e) => setNewSource((s) => ({ ...s, name: e.target.value }))}
+                                        onKeyDown={(e) => e.key === 'Enter' && createSource()}
+                                        placeholder={t('spending.source_name_placeholder')}
+                                    />
+                                </div>
+                                <div className="grid gap-1.5">
+                                    <Label>{t('spending.type')}</Label>
+                                    <div className="grid grid-cols-4 gap-2">
+                                        {SOURCE_TYPE_META.map((opt) => {
+                                            const active = newSource.type === opt.key;
+                                            return (
+                                                <button
+                                                    key={opt.key}
+                                                    type="button"
+                                                    onClick={() => setNewSource((s) => ({ ...s, type: opt.key }))}
+                                                    className={`flex flex-col items-center gap-1.5 rounded-xl border p-2.5 text-xs font-medium transition-colors ${
+                                                        active
+                                                            ? 'border-primary bg-accent-strong text-accent-strong-foreground'
+                                                            : 'bg-surface-card text-text-secondary hover:border-accent'
+                                                    }`}
+                                                >
+                                                    <opt.icon className="size-5" />
+                                                    {t(opt.labelKey)}
+                                                </button>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
+                                <Button
+                                    type="button"
+                                    onClick={createSource}
+                                    disabled={!newSource.name.trim() || savingSource}
+                                    className="mt-1 w-full"
+                                >
+                                    {savingSource ? t('spending.adding') : t('spending.add_source')}
+                                </Button>
+                            </div>
+                        </ResponsiveModal>
+
+                        {/* Record a payment (settle-up) — keyboard-safe drawer. From/to are members. */}
+                        <ResponsiveModal
+                            open={recording}
+                            onOpenChange={(o) => !o && closeTransfer()}
+                            title={t(editingTransfer ? 'spending.edit_transfer' : 'spending.record_payment')}
+                            description={t('spending.record_payment_desc')}
+                            footer={
+                                <div className="flex flex-col gap-2">
+                                    {/* Soft "already recorded?" warning from the server; Record anyway re-posts. */}
+                                    {transferForm.errors.add_anyway && (
+                                        <DuplicateWarning message={transferForm.errors.add_anyway}>
+                                            <Button type="button" size="sm" onClick={() => recordTransfer(true)} disabled={transferForm.processing}>
+                                                {t('spending.record_anyway')}
+                                            </Button>
+                                            <Button type="button" size="sm" variant="ghost" onClick={closeTransfer}>
+                                                {t('common.cancel')}
+                                            </Button>
+                                        </DuplicateWarning>
+                                    )}
+                                    {editingTransfer && (
+                                        <Button
+                                            type="button"
+                                            variant="ghost"
+                                            className="text-destructive w-full"
+                                            onClick={() => deleteTransfer(editingTransfer)}
+                                        >
+                                            <Trash2 className="size-4" /> {t('spending.delete_transfer')}
+                                        </Button>
+                                    )}
+                                    <Button
+                                        type="button"
+                                        onClick={() => recordTransfer()}
+                                        disabled={transferForm.processing || !transferValid}
+                                        className="w-full"
+                                    >
+                                        {t('common.save')}
+                                    </Button>
+                                </div>
+                            }
+                        >
+                            <div className="flex flex-col gap-4 pt-1">
+                                <div className="grid gap-2">
+                                    <Label>{t('spending.from')}</Label>
+                                    <div className="grid grid-cols-2 gap-2">
+                                        {participants.map((p) => {
+                                            const on = transferForm.data.from_key === p.key;
+                                            return (
+                                                <button
+                                                    key={p.key}
+                                                    type="button"
+                                                    onClick={() => transferForm.setData('from_key', p.key)}
+                                                    className={`flex items-center gap-2 rounded-lg border p-2 text-left text-sm transition-colors ${on ? 'border-primary bg-accent-subtle' : 'bg-surface-card'}`}
+                                                >
+                                                    <PersonAvatar name={p.name} className="size-6 text-xs" />
+                                                    <span className="text-primary min-w-0 flex-1 truncate">{p.name}</span>
+                                                </button>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
+                                <div className="grid gap-2">
+                                    <Label>{t('spending.to')}</Label>
+                                    <div className="grid grid-cols-2 gap-2">
+                                        {participants
+                                            .filter((p) => p.key !== transferForm.data.from_key)
+                                            .map((p) => {
+                                                const on = transferForm.data.to_key === p.key;
+                                                return (
+                                                    <button
+                                                        key={p.key}
+                                                        type="button"
+                                                        onClick={() => transferForm.setData('to_key', p.key)}
+                                                        className={`flex items-center gap-2 rounded-lg border p-2 text-left text-sm transition-colors ${on ? 'border-primary bg-accent-subtle' : 'bg-surface-card'}`}
+                                                    >
+                                                        <PersonAvatar name={p.name} className="size-6 text-xs" />
+                                                        <span className="text-primary min-w-0 flex-1 truncate">{p.name}</span>
+                                                    </button>
+                                                );
+                                            })}
+                                    </div>
+                                </div>
+                                <div className="grid gap-2">
+                                    <Label htmlFor="transfer-amount">{t('spending.amount_currency', { currency: event.currency })}</Label>
+                                    <Input
+                                        id="transfer-amount"
+                                        inputMode="decimal"
+                                        onFocus={selectAllOnFocus}
+                                        value={transferForm.data.amount}
+                                        onChange={(e) => transferForm.setData('amount', e.target.value.replace(/,/g, '.').replace(/[^\d.]/g, ''))}
+                                        placeholder="0.00"
+                                    />
+                                    <InputError message={transferForm.errors.amount} />
+                                </div>
+                                <div className="grid gap-2">
+                                    <Label htmlFor="transfer-note">{t('spending.note_optional')}</Label>
+                                    <Input
+                                        id="transfer-note"
+                                        value={transferForm.data.note}
+                                        onChange={(e) => transferForm.setData('note', e.target.value)}
+                                        placeholder={t('spending.transfer_note_placeholder')}
+                                        maxLength={255}
+                                    />
+                                    <InputError message={transferForm.errors.note} />
+                                </div>
+                            </div>
+                        </ResponsiveModal>
+
+                        {/* TRANSFERS — recorded settle-up payments (+ record a new one) */}
+                        {tab === 'transfers' && (
+                            <section className="flex flex-col gap-2">
+                                <div className="flex items-center justify-between">
+                                    <h2 className="text-muted-foreground text-xs font-semibold tracking-widest uppercase">
+                                        {t('spending.transfers_between_you')}
+                                    </h2>
+                                    {participants.length >= 2 && !archived && (
+                                        <button
+                                            type="button"
+                                            onClick={openRecord}
+                                            className="text-primary flex items-center gap-1 text-sm font-medium"
+                                        >
+                                            <Plus className="size-4" /> {t('spending.record')}
+                                        </button>
+                                    )}
+                                </div>
+                                {visibleTransfers.length === 0 && (
+                                    <div className="bg-surface-card text-muted-foreground rounded-xl border p-6 text-center text-sm">
+                                        {t('spending.no_transfers_yet')}
+                                        {participants.length >= 2 && !archived && (
+                                            <button type="button" onClick={openRecord} className="text-primary ml-1 font-medium underline">
+                                                {t('spending.record_payment')}
+                                            </button>
+                                        )}
+                                    </div>
+                                )}
+                                {visibleTransfers.map((tr) => (
+                                    // Tap to edit (the drawer also holds Delete), like an expense row.
+                                    <button
+                                        key={tr.id}
+                                        type="button"
+                                        onClick={() => startEditTransfer(tr)}
+                                        className="bg-surface-card flex w-full items-center gap-3 rounded-xl border p-3 text-left"
+                                    >
+                                        <div className="flex shrink-0 items-center gap-1">
+                                            <PersonAvatar name={tr.from} className="size-8 text-xs" />
+                                            <ArrowRight className="text-muted-foreground size-4" />
+                                            <PersonAvatar name={tr.to} className="size-8 text-xs" />
+                                        </div>
+                                        <div className="min-w-0 flex-1 text-sm">
+                                            <div className="text-primary truncate font-medium">
+                                                {tr.from} → {tr.to}
+                                            </div>
+                                            {tr.note && <div className="text-primary/80 truncate text-xs">{tr.note}</div>}
+                                            <div className="text-muted-foreground text-xs">{dayLabel(t, tr.date)}</div>
+                                        </div>
+                                        <span className="text-primary font-mono text-sm font-semibold tabular-nums">{fmt(tr.amount)}</span>
+                                    </button>
+                                ))}
+                            </section>
+                        )}
+
+                        {/* BALANCES + suggested settle-up */}
+                        {tab === 'balances' && (
+                            <>
+                                {/* Personal breakdown for the viewer. */}
+                                {mySummary && (
+                                    <section className="flex flex-col gap-2">
+                                        <h2 className="text-muted-foreground text-xs font-semibold tracking-widest uppercase">
+                                            {t('spending.your_summary')}
+                                        </h2>
+                                        <div className="bg-surface-card flex flex-col rounded-2xl border p-4">
+                                            {[
+                                                { label: t('spending.total_spent'), value: event.total },
+                                                { label: t('spending.you_paid'), value: mySummary.paid },
+                                                { label: t('spending.your_share'), value: mySummary.share },
+                                                ...(mySummary.sent > 0 ? [{ label: t('spending.transfers_sent'), value: mySummary.sent }] : []),
+                                                ...(mySummary.received > 0
+                                                    ? [{ label: t('spending.transfers_received'), value: mySummary.received }]
+                                                    : []),
+                                            ].map((row) => (
+                                                <div
+                                                    key={row.label}
+                                                    className="border-border/50 flex items-center justify-between border-b border-dashed py-2 text-sm"
+                                                >
+                                                    <span className="text-text-secondary">{row.label}</span>
+                                                    <span className="text-primary font-mono tabular-nums">{fmt(row.value)}</span>
+                                                </div>
+                                            ))}
+                                            <div className="mt-1 flex items-center justify-between pt-2">
+                                                <span className="text-primary font-medium">
+                                                    {t(
+                                                        mySummary.net > 0
+                                                            ? 'spending.you_get_back'
+                                                            : mySummary.net < 0
+                                                              ? 'spending.you_owe'
+                                                              : 'spending.youre_settled_up',
+                                                    )}
+                                                </span>
+                                                <span
+                                                    className={`font-mono text-lg font-semibold tabular-nums ${mySummary.net > 0 ? 'text-primary' : mySummary.net < 0 ? 'text-[var(--warning)]' : 'text-muted-foreground'}`}
+                                                >
+                                                    {mySummary.net === 0 ? '—' : fmt(Math.abs(mySummary.net))}
+                                                </span>
+                                            </div>
+                                        </div>
+                                    </section>
+                                )}
+
+                                <section className="flex flex-col gap-2">
+                                    <h2 className="text-muted-foreground text-xs font-semibold tracking-widest uppercase">
+                                        {t(mySummary ? 'spending.everyone' : 'spending.balances')}
+                                    </h2>
+                                    {balances.map((b) => (
+                                        <div key={b.id} className="bg-surface-card flex items-center justify-between rounded-xl border p-3">
+                                            <div className="flex items-center gap-3">
+                                                <PersonAvatar name={b.name} className="size-8 text-sm" />
+                                                <div>
+                                                    <div className="text-primary text-sm font-medium">{b.name}</div>
+                                                    <div className="text-muted-foreground text-xs">
+                                                        {t(b.net > 0 ? 'spending.gets_back' : b.net < 0 ? 'spending.owes' : 'spending.settled_up')}
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <div
+                                                className={`font-mono text-sm font-semibold tabular-nums ${b.net > 0 ? 'text-primary' : b.net < 0 ? 'text-[var(--warning)]' : 'text-muted-foreground'}`}
+                                            >
+                                                {b.net > 0 ? '+' : ''}
+                                                {fmt(b.net)}
+                                            </div>
+                                        </div>
+                                    ))}
+                                </section>
+
+                                {visibleSuggestions.length > 0 && (
+                                    <section className="flex flex-col gap-2">
+                                        <h2 className="text-muted-foreground text-xs font-semibold tracking-widest uppercase">
+                                            {t('spending.suggested_payments')}
+                                        </h2>
+                                        {visibleSuggestions.map((s, i) => (
+                                            <div key={i} className="bg-surface-card flex items-center justify-between rounded-xl border p-3">
+                                                <div className="text-sm">
+                                                    <span className="text-primary font-medium">{s.from.name}</span>
+                                                    <span className="text-muted-foreground"> {t('spending.pays')} </span>
+                                                    <span className="text-primary font-medium">{s.to.name}</span>
+                                                    <span className="text-primary ml-2 font-mono font-semibold tabular-nums">{fmt(s.amount)}</span>
+                                                </div>
+                                                {!archived && (
+                                                    <Button size="sm" variant="outline" onClick={() => markPaid(s)}>
+                                                        <Check className="size-4" /> {t('spending.mark_paid')}
+                                                    </Button>
+                                                )}
+                                            </div>
+                                        ))}
+                                    </section>
+                                )}
+                            </>
+                        )}
+
+                        {/* SETTINGS — headcount, covered-by, sharing, stats */}
+                        {tab === 'settings' && (
+                            <section className="flex flex-col gap-5">
+                                <div className="flex flex-col gap-2">
+                                    <h2 className="text-muted-foreground text-xs font-semibold tracking-widest uppercase">
+                                        {t('spending.people_and_split')}
+                                    </h2>
+                                    <p className="text-muted-foreground -mt-0.5 text-xs">{t('spending.people_split_desc')}</p>
+                                    {settingsParticipants.map((p) => {
+                                        const coversOthers = settingsParticipants.some((o) => o.coveredBy === p.key);
+                                        const coverName = p.coveredBy ? (participants.find((o) => o.key === p.coveredBy)?.name ?? '?') : null;
+                                        return (
+                                            <div key={p.key} className="bg-surface-card flex flex-col gap-3 rounded-xl border p-3">
+                                                <div className="flex items-center gap-3">
+                                                    <PersonAvatar name={p.name} />
+                                                    <div className="min-w-0 flex-1">
+                                                        <div className="text-primary truncate text-sm font-medium">{p.name}</div>
+                                                        <div className="text-muted-foreground truncate text-xs">
+                                                            {t(p.kind === 'guest' ? 'spending.guest_word' : 'spending.member_word')}
+                                                            {coverName && ` · ${t('spending.covered_by', { name: coverName })}`}
+                                                        </div>
+                                                    </div>
+                                                    {canManageSettings ? (
+                                                        <div className="flex items-center gap-1">
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => setWeight(p, p.weight - 1)}
+                                                                disabled={p.weight <= 1}
+                                                                aria-label={t('spending.fewer_people_for', { name: p.name })}
+                                                                className="border-border text-primary flex size-8 items-center justify-center rounded-lg border text-lg leading-none disabled:opacity-40"
+                                                            >
+                                                                −
+                                                            </button>
+                                                            <span className="text-primary w-6 text-center text-sm font-semibold tabular-nums">
+                                                                {p.weight}
+                                                            </span>
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => setWeight(p, p.weight + 1)}
+                                                                aria-label={t('spending.more_people_for', { name: p.name })}
+                                                                className="border-border text-primary flex size-8 items-center justify-center rounded-lg border text-lg leading-none"
+                                                            >
+                                                                +
+                                                            </button>
+                                                        </div>
+                                                    ) : (
+                                                        <span className="text-muted-foreground text-sm tabular-nums">×{p.weight}</span>
+                                                    )}
+                                                </div>
+                                                {canManageSettings && participants.length > 1 && (
+                                                    <div className="border-border/50 flex items-center justify-between gap-2 border-t pt-2.5">
+                                                        <span className="text-muted-foreground text-xs">{t('spending.pays_label')}</span>
+                                                        <div
+                                                            className="w-52 max-w-[60%]"
+                                                            title={coversOthers ? t('spending.covers_someone_else_title') : undefined}
+                                                        >
+                                                            <Picker
+                                                                options={[
+                                                                    { value: '', label: t('spending.their_own_share') },
+                                                                    ...participants
+                                                                        .filter((o) => o.key !== p.key && !o.coveredBy)
+                                                                        .map((o) => ({
+                                                                            value: o.key,
+                                                                            label: t('spending.covered_by', { name: o.name }),
+                                                                        })),
+                                                                ]}
+                                                                selected={[p.coveredBy ?? '']}
+                                                                onChange={([k]) => setCover(p, k || null)}
+                                                                disabled={coversOthers}
+                                                                fallbackIcon={User}
+                                                                ariaLabel={`${t('spending.pays_label')} ${p.name}`}
+                                                            />
+                                                        </div>
+                                                    </div>
+                                                )}
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+
+                                <div className="flex flex-col gap-2">
+                                    <h2 className="text-muted-foreground text-xs font-semibold tracking-widest uppercase">
+                                        {t('spending.event_word')}
+                                    </h2>
+                                    <button
+                                        type="button"
+                                        onClick={() => setSharing(true)}
+                                        className="bg-surface-card hover:border-accent flex items-center justify-between rounded-xl border p-3 transition-colors"
+                                    >
+                                        <span className="text-primary flex items-center gap-2.5 font-medium">
+                                            <UserPlus className="size-5" /> {t('spending.share_with_family')}
+                                        </span>
+                                        <ChevronRight className="text-muted-foreground size-4" />
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => setGuestSharing(true)}
+                                        className="bg-surface-card hover:border-accent flex items-center justify-between rounded-xl border p-3 transition-colors"
+                                    >
+                                        <span className="text-primary flex items-center gap-2.5 font-medium">
+                                            <Link2 className="size-5" /> {t('spending.guest_link')}
+                                            {guestShare?.enabled && <span className="bg-accent-light size-2 rounded-full" />}
+                                        </span>
+                                        <ChevronRight className="text-muted-foreground size-4" />
+                                    </button>
+                                    <Link
+                                        href={route('spending.stats', event.id)}
+                                        prefetch
+                                        className="bg-surface-card hover:border-accent flex items-center justify-between rounded-xl border p-3 transition-colors"
+                                    >
+                                        <span className="text-primary flex items-center gap-2.5 font-medium">
+                                            <BarChart3 className="size-5" /> {t('spending.see_stats')}
+                                        </span>
+                                        <ChevronRight className="text-muted-foreground size-4" />
+                                    </Link>
+                                </div>
+                            </section>
+                        )}
+
+                        {/* EXPENSES — add / scan. Scan is only offered when the server has a Gemini key configured. */}
+                        {tab === 'expenses' && archived && (
+                            <div
+                                role="status"
+                                className="bg-surface-card flex flex-col gap-3 rounded-xl border p-4 text-sm sm:flex-row sm:items-center"
+                            >
+                                <span className="text-muted-foreground flex flex-1 items-center gap-2">
+                                    <Archive className="size-4 shrink-0" /> {t('spending.archived_notice')}
+                                </span>
+                                <Button variant="outline" size="sm" onClick={toggleArchived} className="shrink-0">
+                                    {t('spending.unarchive_event')}
+                                </Button>
+                            </div>
+                        )}
+                        {tab === 'expenses' && !archived && (
+                            <div className="flex flex-col gap-2">
+                                {scanEnabled && (
+                                    <>
+                                        <Button
+                                            variant="outline"
+                                            onClick={() => scanInputRef.current?.click()}
+                                            disabled={scanning}
+                                            className="w-full"
+                                        >
+                                            {scanning ? (
+                                                <>
+                                                    <Loader2 className="size-4 animate-spin" /> {t('spending.reading_receipt')}
+                                                </>
+                                            ) : (
+                                                <>
+                                                    <Camera className="size-4" /> {t('spending.scan_receipt')}
+                                                </>
+                                            )}
+                                        </Button>
+                                        {/* NOTE: intentionally no `capture` attribute. `capture="environment"` forces the
+                                            rear camera on iOS and hides the photo library, so you can't scan a screenshot
+                                            (e.g. a Wise receipt already saved in Photos). With only `accept="image/*"`,
+                                            iOS/Android show the native chooser (Photo Library / Take Photo / Choose File),
+                                            letting the user pick an existing image OR shoot a new one. Do not re-add `capture`. */}
+                                        <input ref={scanInputRef} type="file" accept="image/*" hidden onChange={handleScanFile} />
+                                        {scanError && <p className="text-destructive text-center text-sm">{scanError}</p>}
+                                    </>
+                                )}
+                                <Button onClick={startAdd} className="w-full">
+                                    <Plus className="size-4" /> {t('spending.add_spend')}
+                                </Button>
+                            </div>
+                        )}
+
+                        {/* Add / edit a spend in a bottom drawer on mobile, a centered overlay on desktop.
+                    Closing the drawer cancels. */}
+                        <ResponsiveModal
+                            open={adding}
+                            onOpenChange={(o) => !o && closeForm()}
+                            title={t(editing ? 'spending.edit_spend' : 'spending.new_spend')}
+                            className="sm:max-w-lg"
+                            autoFocusRef={amountRef}
+                            footer={
+                                <div className="flex flex-col gap-2">
+                                    {/* Soft duplicate warning from the server: Add anyway re-posts with add_anyway. */}
+                                    {form.errors.add_anyway && (
+                                        <DuplicateWarning message={form.errors.add_anyway}>
+                                            <Button type="button" size="sm" disabled={form.processing} onClick={() => submit(true)}>
+                                                {t(editing ? 'spending.save_anyway' : 'spending.add_anyway')}
+                                            </Button>
+                                            <Button type="button" size="sm" variant="ghost" onClick={closeForm}>
+                                                {t('common.cancel')}
+                                            </Button>
+                                        </DuplicateWarning>
+                                    )}
+                                    {/* With a move target picked, the footer commits the MOVE (label says so);
+                                        otherwise it saves the edits. Split validity is irrelevant to a move. */}
+                                    <Button
+                                        type="submit"
+                                        form="spend-form"
+                                        disabled={moveTarget ? moving : form.processing || !splitValid}
+                                        className="w-full"
+                                    >
+                                        {moveTarget
+                                            ? t('spending.move_to_named', { name: moveTargets.find((m) => String(m.id) === moveTarget)?.name ?? '' })
+                                            : t('common.save')}
+                                    </Button>
+                                </div>
+                            }
+                        >
+                            {/* The <form> holds no fields directly; the text inputs join it via form="spend-form" and
+                        the dropdowns (Pickers, incl. their search boxes) stay outside it. That keeps them out of the
+                        form's field set, so iOS enables the keyboard's prev/next arrows across Amount/Date/Note. */}
+                            <form id="spend-form" onSubmit={submitSpend} className="hidden" />
+                            <div className="flex flex-col gap-3">
+                                {/* minmax(0,1fr) lets the amount input shrink below its intrinsic ~20ch width so the
+                            row never overflows the drawer horizontally. */}
+                                <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3">
+                                    <div className="grid gap-2">
+                                        <Label htmlFor="amount">{t('spending.amount')}</Label>
+                                        {/* type=text (not number) so iOS honours inputMode=decimal and shows the real
+                                    decimal pad. In comma-locales the separator key is a comma, so we normalise
+                                    it to a dot (and strip stray chars) since the backend wants a plain number. */}
+                                        <Input
+                                            id="amount"
+                                            form="spend-form"
+                                            ref={amountRef}
+                                            type="text"
+                                            inputMode="decimal"
+                                            onFocus={selectAllOnFocus}
+                                            value={form.data.amount}
+                                            onChange={(e) => form.setData('amount', e.target.value.replace(/,/g, '.').replace(/[^\d.]/g, ''))}
+                                            placeholder="0.00"
+                                        />
+                                        <InputError message={form.errors.amount} />
+                                    </div>
+                                    <div className="grid gap-2">
+                                        <Label htmlFor="spend-currency">{t('spending.currency')}</Label>
+                                        <div className="w-[120px]">
+                                            <Picker
+                                                id="spend-currency"
+                                                options={currencyChoices}
+                                                selected={[form.data.currency]}
+                                                onChange={([c]) => c && form.setData('currency', c)}
+                                                fallbackIcon={Banknote}
+                                            />
+                                        </div>
+                                    </div>
+                                </div>
+                                {/* Note sits right under the amount: with AI on, typing it fills the category below. */}
+                                <div className="grid gap-2">
+                                    <Label htmlFor="note">{t('spending.note_optional')}</Label>
+                                    <Textarea
+                                        id="note"
+                                        form="spend-form"
+                                        rows={2}
+                                        value={form.data.note}
+                                        onChange={(e) => form.setData('note', e.target.value)}
+                                        placeholder={t('spending.note_placeholder')}
+                                    />
+                                </div>
+                                <div className="grid gap-3">
+                                    <div className="grid gap-2">
+                                        <Label htmlFor="spend-category">{t('spending.category')}</Label>
+                                        {/* The family's dynamic categories (defaults + custom), each with its icon tinted by the
+                                            category colour; same searchable Picker as the overview's quick-add. */}
+                                        <Picker
+                                            id="spend-category"
+                                            fallbackIcon={Tag}
+                                            options={event.categories.map((c) => ({
+                                                value: c.key,
+                                                label: catLabel(t, catMap, c.key),
+                                                icon: ({ className }: { className?: string }) => (
+                                                    <CategoryIcon icon={c.icon} className={className} style={{ color: catColor(catMap, c.key) }} />
+                                                ),
+                                            }))}
+                                            selected={[form.data.category]}
+                                            onChange={([k]) => {
+                                                if (!k) return;
+                                                suggest.onManualPick();
+                                                form.setData('category', k);
+                                            }}
+                                        />
+                                    </div>
+                                    {/* Shop: searchable single-select over names already used (Spending + Shopping modules), with
+                                        "Add …" for a new one. '__none' stands in for '' because the Picker treats an empty
+                                        selection as "nothing picked" and single mode has no clear control. */}
+                                    <div className="grid gap-2">
+                                        <Label>{t('spending.shop_optional')}</Label>
+                                        <Picker
+                                            searchable
+                                            fallbackIcon={Store}
+                                            options={[
+                                                { value: '__none', label: t('spending.no_shop') },
+                                                // A scanned/typed name not in the suggestions still needs an option so it shows selected.
+                                                ...(form.data.store && !event.shops.includes(form.data.store)
+                                                    ? [{ value: form.data.store, label: form.data.store }]
+                                                    : []),
+                                                ...event.shops.map((name) => ({ value: name, label: name })),
+                                            ]}
+                                            selected={[form.data.store || '__none']}
+                                            onChange={(next) => form.setData('store', next[0] === '__none' ? '' : (next[0] ?? ''))}
+                                            onCreate={(name) => form.setData('store', name)}
+                                        />
+                                        {/* Add mode only: when editing, the spend on screen is already in the total, which would mislead. */}
+                                        {!editing && <ShopMonthHint shop={form.data.store} shopTotals={shopTotals} />}
+                                    </div>
+                                    <div className="grid gap-2">
+                                        <Label htmlFor="spend-payer">{t('spending.paid_by_field')}</Label>
+                                        {/* Any participant can be the payer: family members and the guests we shared with. */}
+                                        <Picker
+                                            id="spend-payer"
+                                            options={participants.map((p) => ({
+                                                value: p.key,
+                                                label: p.name + (p.key === 'u' + authId ? t('spending.you_suffix') : ''),
+                                            }))}
+                                            selected={[form.data.payer_key]}
+                                            onChange={([k]) => k && form.setData('payer_key', k)}
+                                            fallbackIcon={User}
+                                        />
+                                    </div>
+                                </div>
+                                {/* How this spend splits: everyone (default), a chosen subset, or exact amounts. */}
+                                <div className="grid gap-2">
+                                    <Label>{t('spending.split_label')}</Label>
+                                    <div className="bg-surface grid grid-cols-3 gap-1 rounded-lg border p-1">
+                                        {(
+                                            [
+                                                ['all', 'spending.split_everyone'],
+                                                ['some', 'spending.split_only_some'],
+                                                ['exact', 'spending.split_custom'],
+                                            ] as const
+                                        ).map(([k, labelKey]) => (
+                                            <button
+                                                key={k}
+                                                type="button"
+                                                onClick={() => {
+                                                    form.setData('split', k);
+                                                    if (k === 'exact' && Object.keys(form.data.share_amounts).length === 0) splitEqually();
+                                                }}
+                                                className={`rounded-md py-1.5 text-sm font-medium transition-colors ${
+                                                    form.data.split === k ? 'bg-accent-strong text-accent-strong-foreground' : 'text-text-secondary'
+                                                }`}
+                                            >
+                                                {t(labelKey)}
+                                            </button>
+                                        ))}
+                                    </div>
+
+                                    {form.data.split === 'some' && (
+                                        <div className="grid grid-cols-2 gap-2">
+                                            {participants.map((p) => {
+                                                const on = form.data.share_keys.includes(p.key);
+                                                return (
+                                                    <button
+                                                        key={p.key}
+                                                        type="button"
+                                                        onClick={() => toggleShareKey(p.key)}
+                                                        className={`flex items-center gap-2 rounded-lg border p-2 text-left text-sm transition-colors ${
+                                                            on ? 'border-primary bg-accent-subtle' : 'bg-surface-card'
+                                                        }`}
+                                                    >
+                                                        <PersonAvatar name={p.name} className="size-6 text-xs" />
+                                                        <span className="text-primary min-w-0 flex-1 truncate">{p.name}</span>
+                                                        {on && <Check className="text-primary size-4 shrink-0" />}
+                                                    </button>
+                                                );
+                                            })}
+                                        </div>
+                                    )}
+
+                                    {form.data.split === 'exact' && (
+                                        <div className="flex flex-col gap-2">
+                                            <div className="flex items-center justify-between">
+                                                <span className="text-muted-foreground text-xs">
+                                                    {t('spending.amount_each_owes', { currency: form.data.currency })}
+                                                </span>
+                                                <button type="button" onClick={splitEqually} className="text-primary text-xs font-medium underline">
+                                                    {t('spending.split_equally')}
+                                                </button>
+                                            </div>
+                                            {participants.map((p) => (
+                                                <div key={p.key} className="flex items-center gap-2">
+                                                    <PersonAvatar name={p.name} className="size-6 text-xs" />
+                                                    <span className="text-primary min-w-0 flex-1 truncate text-sm">{p.name}</span>
+                                                    <Input
+                                                        form="spend-form"
+                                                        inputMode="decimal"
+                                                        onFocus={selectAllOnFocus}
+                                                        value={form.data.share_amounts[p.key] ?? ''}
+                                                        onChange={(e) => setShareAmount(p.key, e.target.value)}
+                                                        placeholder="0.00"
+                                                        className="w-24 text-right"
+                                                    />
+                                                </div>
+                                            ))}
+                                            <div
+                                                className={`flex items-center justify-between text-xs ${remainingCents !== 0 ? 'text-[var(--warning)]' : 'text-muted-foreground'}`}
+                                            >
+                                                <span>
+                                                    {money(exactSumCents, form.data.currency)} {t('spending.of')}{' '}
+                                                    {money(amountCents, form.data.currency)}
+                                                </span>
+                                                <span>
+                                                    {remainingCents === 0
+                                                        ? t('spending.balanced')
+                                                        : `${money(Math.abs(remainingCents), form.data.currency)} ${t(remainingCents > 0 ? 'spending.left' : 'spending.over')}`}
+                                                </span>
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
+
+                                <div className="grid gap-2">
+                                    <Label htmlFor="spend-source">{t('spending.paid_with')}</Label>
+                                    <Picker
+                                        id="spend-source"
+                                        options={[
+                                            { value: 'none', label: t('spending.not_specified') },
+                                            ...sources.map((src) => ({
+                                                value: String(src.id),
+                                                label: `${src.name} · ${sourceTypeLabel(t, src.type)}`,
+                                                icon: SOURCE_TYPE_META.find((m) => m.key === src.type)?.icon,
+                                            })),
+                                            // The last item opens the new-source modal instead of selecting a value.
+                                            { value: '__new__', label: t('spending.new_source'), icon: Plus },
+                                        ]}
+                                        selected={[form.data.source_id ? String(form.data.source_id) : 'none']}
+                                        onChange={([v]) => {
+                                            if (v === '__new__') setSourceModalOpen(true);
+                                            else if (v) form.setData('source_id', v === 'none' ? null : Number(v));
+                                        }}
+                                        fallbackIcon={Wallet}
+                                    />
+                                </div>
+                                <div className="grid gap-2">
+                                    <Label htmlFor="date">{t('spending.date')}</Label>
+                                    {/* appearance-none strips iOS's native date chrome so it keeps the shared h-10 sizing. */}
+                                    <Input
+                                        id="date"
+                                        form="spend-form"
+                                        type="date"
+                                        className="appearance-none"
+                                        value={form.data.spent_at}
+                                        onChange={(e) => form.setData('spent_at', e.target.value)}
+                                    />
+                                </div>
+                                <ToggleRow
+                                    label={t('spending.count_in_monthly')}
+                                    hint={t('spending.count_in_monthly_hint')}
+                                    on={form.data.count_in_monthly}
+                                    onToggle={() => form.setData('count_in_monthly', !form.data.count_in_monthly)}
+                                />
+                                <div className="grid gap-2">
+                                    <Label htmlFor="receipts">{t('spending.receipts_label')}</Label>
+                                    <div className="flex flex-wrap items-center gap-2">
+                                        {/* Existing photos on the spend, each removable (queued for deletion on save). */}
+                                        {existingReceipts.map((r) => (
+                                            <div key={r.id} className="relative shrink-0">
+                                                <img
+                                                    src={r.url}
+                                                    alt={t('spending.receipt_alt')}
+                                                    className="border-border size-14 rounded-md border object-cover"
+                                                />
+                                                <button
+                                                    type="button"
+                                                    onClick={() => form.setData('remove_receipt_ids', [...form.data.remove_receipt_ids, r.id])}
+                                                    aria-label={t('spending.remove_photo')}
+                                                    className="bg-background text-muted-foreground hover:text-destructive border-border absolute -top-2 -right-2 flex size-5 items-center justify-center rounded-full border shadow-sm"
+                                                >
+                                                    <X className="size-3" />
+                                                </button>
+                                            </div>
+                                        ))}
+                                        {/* Newly picked files (previewed locally), each removable before saving. */}
+                                        {form.data.receipts.map((file, i) => (
+                                            <div key={i} className="relative shrink-0">
+                                                <img
+                                                    src={URL.createObjectURL(file)}
+                                                    alt={t('spending.new_photo_alt')}
+                                                    className="border-border size-14 rounded-md border object-cover"
+                                                />
+                                                <button
+                                                    type="button"
+                                                    onClick={() =>
+                                                        form.setData({
+                                                            ...form.data,
+                                                            receipts: form.data.receipts.filter((_, k) => k !== i),
+                                                            receipts_thumb: form.data.receipts_thumb.filter((_, k) => k !== i),
+                                                        })
+                                                    }
+                                                    aria-label={t('spending.remove_photo')}
+                                                    className="bg-background text-muted-foreground hover:text-destructive border-border absolute -top-2 -right-2 flex size-5 items-center justify-center rounded-full border shadow-sm"
+                                                >
+                                                    <X className="size-3" />
+                                                </button>
+                                            </div>
+                                        ))}
+                                        <label
+                                            htmlFor="receipts"
+                                            className="border-border text-muted-foreground hover:border-accent hover:text-primary flex size-14 shrink-0 cursor-pointer items-center justify-center rounded-md border border-dashed transition-colors"
+                                        >
+                                            <Plus className="size-5" />
+                                        </label>
+                                        <input
+                                            id="receipts"
+                                            type="file"
+                                            accept="image/*"
+                                            multiple
+                                            className="hidden"
+                                            onChange={async (e) => {
+                                                const files = Array.from(e.target.files ?? []);
+                                                const compressed = await Promise.all(files.map((f) => compressImage(f)));
+                                                // A thumbnail per receipt (fall back to the full image if it can't be made),
+                                                // kept index-aligned with `receipts`.
+                                                const thumbs = await Promise.all(files.map((f) => makeThumbnail(f, 640)));
+                                                form.setData({
+                                                    ...form.data,
+                                                    receipts: [...form.data.receipts, ...compressed],
+                                                    receipts_thumb: [...form.data.receipts_thumb, ...thumbs.map((th, k) => th ?? compressed[k])],
+                                                });
+                                                e.target.value = ''; // let the same file be picked again after removal
+                                            }}
+                                        />
+                                    </div>
+                                    {form.progress && <progress value={form.progress.percentage} max="100" className="h-1 w-full" />}
+                                    <InputError message={form.errors.receipts} />
+                                </div>
+
+                                {/* Advanced (edit only): move this expense to another spending list. */}
+                                {editing && (
+                                    <div className="border-border/70 mt-1 border-t pt-3">
+                                        <button
+                                            type="button"
+                                            onClick={() => setAdvancedOpen((v) => !v)}
+                                            className="text-primary flex w-full items-center justify-between text-sm font-medium"
+                                        >
+                                            {t('spending.advanced')}
+                                            <ChevronDown
+                                                className={`text-muted-foreground size-4 transition-transform ${advancedOpen ? 'rotate-180' : ''}`}
+                                            />
+                                        </button>
+                                        {advancedOpen && (
+                                            <div className="mt-3 grid gap-2">
+                                                <div className="flex items-center justify-between">
+                                                    <Label>{t('spending.move_to_list')}</Label>
+                                                    {moveTarget && (
+                                                        <button
+                                                            type="button"
+                                                            className="text-muted-foreground hover:text-primary text-xs"
+                                                            onClick={() => {
+                                                                setMoveTarget('');
+                                                                setMoveError(null);
+                                                            }}
+                                                        >
+                                                            {t('common.cancel')}
+                                                        </button>
+                                                    )}
+                                                </div>
+                                                {editingSpend?.payer.isGuest ? (
+                                                    <p className="text-muted-foreground text-xs">{t('spending.move_guest_blocked')}</p>
+                                                ) : moveTargets.length === 0 ? (
+                                                    <p className="text-muted-foreground text-xs">{t('spending.move_no_targets')}</p>
+                                                ) : (
+                                                    <>
+                                                        <Picker
+                                                            options={moveTargets.map((m) => ({ value: String(m.id), label: m.name }))}
+                                                            selected={moveTarget ? [moveTarget] : []}
+                                                            onChange={([v]) => {
+                                                                setMoveTarget(v ?? '');
+                                                                setMoveError(null);
+                                                            }}
+                                                            placeholder={t('spending.move_pick_list')}
+                                                            fallbackIcon={Wallet}
+                                                            ariaLabel={t('spending.move_to_list')}
+                                                        />
+                                                        {/* The footer button commits the move; here we just show what will happen. */}
+                                                        {moveTarget && (
+                                                            <div className="bg-surface mt-1 grid gap-1 rounded-lg p-3">
+                                                                <p className="text-primary text-xs font-medium">{t('spending.move_on_save_hint')}</p>
+                                                                {editingSpend && editingSpend.split !== 'all' && (
+                                                                    <p className="text-xs" style={{ color: 'var(--warning)' }}>
+                                                                        {t('spending.move_resets_split')}
+                                                                    </p>
+                                                                )}
+                                                                {(() => {
+                                                                    const tgt = moveTargets.find((m) => String(m.id) === moveTarget);
+                                                                    return tgt && tgt.currency !== event.currency ? (
+                                                                        <p className="text-muted-foreground text-xs">
+                                                                            {t('spending.move_reconverts', { currency: tgt.currency })}
+                                                                        </p>
+                                                                    ) : null;
+                                                                })()}
+                                                                {moveError && <p className="text-destructive text-xs">{moveError}</p>}
+                                                            </div>
+                                                        )}
+                                                    </>
+                                                )}
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
+                            </div>
+                        </ResponsiveModal>
+
+                        {/* EXPENSES — spend log, grouped by day, newest first, with a per-day subtotal */}
+                        {tab === 'expenses' && (
+                            <section className="flex flex-col gap-4">
+                                <h2 className="text-muted-foreground text-xs font-semibold tracking-widest uppercase">{t('spending.spend_log')}</h2>
+                                {dayGroups.map((group) => (
+                                    <div key={group.date} className="flex flex-col gap-2">
+                                        <div className="flex items-center justify-between px-1">
+                                            <span className="text-text-secondary text-sm font-medium">{dayLabel(t, group.date)}</span>
+                                            <span className="text-muted-foreground font-mono text-sm tabular-nums">{fmt(group.total)}</span>
+                                        </div>
+                                        {group.spends.map((s) => (
+                                            // Tapping the row edits the spend; the receipt thumbnail and the kebab
+                                            // menu stop propagation so they keep their own actions.
+                                            <div
+                                                key={s.id}
+                                                role="button"
+                                                tabIndex={0}
+                                                onClick={() => startEdit(s)}
+                                                onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && startEdit(s)}
+                                                className="bg-surface-card hover:border-accent/60 flex cursor-pointer items-center gap-3 rounded-xl border p-3 transition-colors"
+                                            >
+                                                <div className="flex min-w-0 flex-1 items-center gap-3">
+                                                    {s.receipts.length > 0 ? (
+                                                        <button
+                                                            type="button"
+                                                            onClick={(e) => {
+                                                                e.stopPropagation();
+                                                                openLightbox(s.receipts.map((r) => r.url));
+                                                            }}
+                                                            className="relative shrink-0"
+                                                            aria-label={t(
+                                                                s.receipts.length > 1
+                                                                    ? 'spending.view_receipt_photos'
+                                                                    : 'spending.view_receipt_photo',
+                                                                { count: s.receipts.length },
+                                                            )}
+                                                        >
+                                                            <img
+                                                                src={s.receipts[0].thumbUrl}
+                                                                alt={t('spending.receipt_alt')}
+                                                                className="border-border size-9 rounded-lg border object-cover"
+                                                            />
+                                                            {s.receipts.length > 1 && (
+                                                                <span className="bg-accent-strong text-accent-strong-foreground absolute -top-1.5 -right-1.5 flex min-w-4 items-center justify-center rounded-full px-1 text-[10px] font-semibold tabular-nums">
+                                                                    {s.receipts.length}
+                                                                </span>
+                                                            )}
+                                                        </button>
+                                                    ) : (
+                                                        <PersonAvatar name={s.payer.name ?? t('spending.guest_word')} />
+                                                    )}
+                                                    <div className="min-w-0 flex-1">
+                                                        <div className="text-primary line-clamp-2 text-sm font-medium">
+                                                            {s.note || catLabel(t, catMap, s.category)}
+                                                        </div>
+                                                        <div className="text-muted-foreground truncate text-xs">
+                                                            {(s.payer.name ?? t('spending.guest_word')).split(' ')[0]} ·{' '}
+                                                            {catLabel(t, catMap, s.category)}
+                                                            {s.split !== 'all' && (
+                                                                <span className="normal-case">
+                                                                    {' '}
+                                                                    ·{' '}
+                                                                    {s.split === 'exact'
+                                                                        ? t('spending.custom_split')
+                                                                        : t('spending.people_count', { count: s.shares.length })}
+                                                                </span>
+                                                            )}
+                                                            {s.source && <span className="normal-case"> · {s.source.name}</span>}
+                                                            {!(s.count_in_monthly ?? event.countInMonthly) && (
+                                                                <span className="normal-case"> · {t('spending.not_in_monthly')}</span>
+                                                            )}
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                                <div className="flex shrink-0 items-center gap-1">
+                                                    <div className="text-right">
+                                                        <div className="text-primary font-mono text-sm font-semibold tabular-nums">
+                                                            {money(s.amount, s.currency)}
+                                                        </div>
+                                                        {s.currency !== display && (
+                                                            <div className="text-muted-foreground font-mono text-xs tabular-nums">
+                                                                {fmt(s.base_amount)}
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                    {!archived && (
+                                                        <DropdownMenu>
+                                                            <DropdownMenuTrigger asChild>
+                                                                <Button
+                                                                    variant="ghost"
+                                                                    size="icon"
+                                                                    className="text-muted-foreground size-8"
+                                                                    aria-label={t('spending.spend_actions_aria')}
+                                                                    onClick={(e) => e.stopPropagation()}
+                                                                >
+                                                                    <MoreVertical className="size-4" />
+                                                                </Button>
+                                                            </DropdownMenuTrigger>
+                                                            <DropdownMenuContent align="end">
+                                                                <DropdownMenuItem onClick={() => startEdit(s)}>
+                                                                    <Pencil className="size-4" /> {t('common.edit')}
+                                                                </DropdownMenuItem>
+                                                                <DropdownMenuItem onClick={() => duplicate(s)}>
+                                                                    <Copy className="size-4" /> {t('spending.duplicate')}
+                                                                </DropdownMenuItem>
+                                                                <DropdownMenuSeparator />
+                                                                <DropdownMenuItem
+                                                                    className="text-destructive focus:text-destructive"
+                                                                    onClick={() => remove(s)}
+                                                                >
+                                                                    <Trash2 className="size-4" /> {t('common.delete')}
+                                                                </DropdownMenuItem>
+                                                            </DropdownMenuContent>
+                                                        </DropdownMenu>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                ))}
+                            </section>
+                        )}
+                    </div>
+                </div>
+
+                {/* Receipt lightbox — swipe/click through a spend's photos */}
+                <Dialog open={!!viewing} onOpenChange={(open) => !open && setViewing(null)}>
+                    <DialogContent className="max-w-3xl border-none bg-transparent p-0 shadow-none">
+                        <DialogTitle className="sr-only">{t('spending.receipt_photos_title')}</DialogTitle>
+                        {viewing && (
+                            <div className="relative">
+                                <img
+                                    src={viewing[viewIndex]}
+                                    alt={t('spending.receipt_alt')}
+                                    className="max-h-[85vh] w-full rounded-lg object-contain"
+                                />
+                                {viewing.length > 1 && (
+                                    <>
+                                        <button
+                                            type="button"
+                                            onClick={() => setViewIndex((i) => (i - 1 + viewing.length) % viewing.length)}
+                                            aria-label={t('spending.previous_photo')}
+                                            className="absolute top-1/2 left-2 flex size-10 -translate-y-1/2 items-center justify-center rounded-full bg-black/45 text-white backdrop-blur-sm"
+                                        >
+                                            <ChevronLeft className="size-6" />
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => setViewIndex((i) => (i + 1) % viewing.length)}
+                                            aria-label={t('spending.next_photo')}
+                                            className="absolute top-1/2 right-2 flex size-10 -translate-y-1/2 items-center justify-center rounded-full bg-black/45 text-white backdrop-blur-sm"
+                                        >
+                                            <ChevronRight className="size-6" />
+                                        </button>
+                                        <span className="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full bg-black/45 px-2.5 py-1 font-mono text-xs text-white tabular-nums">
+                                            {viewIndex + 1} / {viewing.length}
+                                        </span>
+                                    </>
+                                )}
+                            </div>
+                        )}
+                    </DialogContent>
+                </Dialog>
+            </AppLayout>
+        </AvatarColorContext.Provider>
+    );
+}

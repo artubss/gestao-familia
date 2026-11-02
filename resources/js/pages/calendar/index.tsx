@@ -1,0 +1,206 @@
+import { Head, router } from '@inertiajs/react';
+import { CalendarDays, CalendarPlus, CalendarRange, ChartGantt, ChevronLeft, ChevronRight, Filter, Plus } from 'lucide-react';
+import { useRef, useState } from 'react';
+
+import { EventSheet } from '@/components/calendar/event-sheet';
+import { FeedSheet, type Subscription } from '@/components/calendar/feed-sheet';
+import { FilterSheet } from '@/components/calendar/filter-sheet';
+import { InfiniteTimeline, type TimelineHandle } from '@/components/calendar/infinite-timeline';
+import { MonthView } from '@/components/calendar/month-view';
+import { WeekView } from '@/components/calendar/week-view';
+import { Picker } from '@/components/picker';
+import { Button } from '@/components/ui/button';
+import AppLayout from '@/layouts/app-layout';
+import { useAddAction } from '@/lib/add-action';
+import { filterItems, shiftDate, type CalFilter, type CalItem } from '@/lib/calendar';
+import { openNewOnArrival } from '@/lib/create-intent';
+import { localToday } from '@/lib/date-groups';
+import { useLocale, useT } from '@/lib/i18n';
+
+const FILTER_KEY = 'familywell:calendarFilter';
+const readFilter = (): CalFilter => {
+    try {
+        const v = JSON.parse(localStorage.getItem(FILTER_KEY) ?? '');
+        return { people: Array.isArray(v?.people) ? v.people : [], sources: Array.isArray(v?.sources) ? v.sources : [] };
+    } catch {
+        return { people: [], sources: [] };
+    }
+};
+
+type Named = { id: number; name: string };
+export type CalendarProps = {
+    view: 'month' | 'week' | 'timeline';
+    zoom: 'week' | 'month' | 'year';
+    date: string;
+    range: { from: string; to: string };
+    items: CalItem[];
+    sources: string[];
+    members: Named[];
+    contacts: Named[];
+    projects: Named[] | null;
+    feedUrl: string | null;
+    subscriptions: Subscription[];
+};
+
+// View, zoom and date live in the query string (back/forward + shareable); the server answers with the range
+// and its items. Navigation is a partial reload of only those props: members/contacts/projects stay put.
+export default function CalendarIndex({
+    view,
+    zoom,
+    date,
+    range,
+    items,
+    sources,
+    members,
+    contacts,
+    projects,
+    feedUrl,
+    subscriptions,
+}: CalendarProps) {
+    const t = useT();
+    const locale = useLocale();
+    const todayYmd = localToday(); // the family's day, same as Home and the server
+    // Phones list the selected day under the grid: today when it's in the shown month, else the date asked for.
+    const [selected, setSelected] = useState(date.slice(0, 7) === todayYmd.slice(0, 7) ? todayYmd : date);
+    const [sheet, setSheet] = useState<{ open: boolean; day: string }>(() => ({ open: openNewOnArrival(), day: selected }));
+    const add = (day = selected) => setSheet({ open: true, day });
+    useAddAction(() => add());
+
+    // Drop any remembered source/person no longer valid for this family (a module disabled since it was
+    // saved, or a removed member/contact) so a stale filter never silently hides everything.
+    const validSources = new Set(sources);
+    const validPeople = new Set([...members.map((m) => `user:${m.id}`), ...contacts.map((c) => `person:${c.id}`)]);
+    const sanitizeFilter = (f: CalFilter): CalFilter => ({
+        people: f.people.filter((p) => validPeople.has(p)),
+        sources: f.sources.filter((s) => validSources.has(s)),
+    });
+    const [filter, setFilterState] = useState<CalFilter>(() => sanitizeFilter(readFilter()));
+    const [filtering, setFiltering] = useState(false);
+    const [feedOpen, setFeedOpen] = useState(false);
+    const setFilter = (f: CalFilter) => {
+        setFilterState(f);
+        try {
+            localStorage.setItem(FILTER_KEY, JSON.stringify(f));
+        } catch {
+            /* private mode: not remembered */
+        }
+    };
+    const shown = filterItems(items, filter);
+    const active = filter.people.length + filter.sources.length;
+
+    // The endless timeline scrolls instead of loading another window: prev/next page through it, Today scrolls back,
+    // and the title follows the month on screen.
+    const endless = view === 'timeline';
+    const strip = useRef<TimelineHandle>(null);
+    const [stripMonth, setStripMonth] = useState<string | null>(null);
+    const go = (q: Partial<Pick<CalendarProps, 'view' | 'zoom' | 'date'>>) => {
+        if (q.date) setSelected(q.date);
+        router.get(
+            '/m/calendar',
+            { view, zoom, date, ...q },
+            { preserveState: true, preserveScroll: true, only: ['view', 'zoom', 'date', 'range', 'items'] },
+        );
+    };
+    // Remembered per device; the server reads it when the calendar opens without a view.
+    const remember = (v: string) => {
+        document.cookie = `fw_calendar_view=${v}; path=/; max-age=31536000; samesite=lax`;
+    };
+    const label = new Date((endless && stripMonth ? stripMonth : date) + 'T12:00').toLocaleDateString(
+        locale,
+        view === 'timeline' && zoom === 'year' ? { year: 'numeric' } : { month: 'long', year: 'numeric' },
+    );
+
+    return (
+        <AppLayout breadcrumbs={[{ title: t('nav.calendar'), href: '/m/calendar' }]}>
+            <Head title={t('nav.calendar')} />
+            <div className="mx-auto flex w-full max-w-6xl flex-col gap-4 p-4">
+                <div className="flex items-center gap-1">
+                    <h1 className="font-heading text-primary mr-auto truncate text-2xl first-letter:uppercase">{label}</h1>
+                    <Button
+                        variant="ghost"
+                        size="icon"
+                        aria-label={t('calendar.previous')}
+                        onClick={() => (endless ? strip.current?.scrollPage(-1) : go({ date: shiftDate(view, zoom, date, -1) }))}
+                    >
+                        <ChevronLeft className="size-5" />
+                    </Button>
+                    <Button
+                        variant="outline"
+                        size="sm"
+                        className="rounded-full"
+                        onClick={() => (endless ? strip.current?.scrollToToday() : go({ date: todayYmd }))}
+                    >
+                        {t('calendar.today')}
+                    </Button>
+                    <Button
+                        variant="ghost"
+                        size="icon"
+                        aria-label={t('calendar.next')}
+                        onClick={() => (endless ? strip.current?.scrollPage(1) : go({ date: shiftDate(view, zoom, date, 1) }))}
+                    >
+                        <ChevronRight className="size-5" />
+                    </Button>
+                    <Button variant="outline" size="sm" onClick={() => setFiltering(true)}>
+                        <Filter className="size-4" />
+                        {active > 0 ? ` ${active}` : ''}
+                    </Button>
+                    <Button variant="ghost" size="icon" aria-label={t('calendar.calendars_title')} onClick={() => setFeedOpen(true)}>
+                        <CalendarPlus className="size-5" />
+                    </Button>
+                    {/* Hidden on mobile: the nav's context-aware "+" adds an event there. */}
+                    <Button size="icon" className="ml-2 hidden rounded-full md:inline-flex" onClick={() => add()} aria-label={t('calendar.new')}>
+                        <Plus className="size-5" />
+                    </Button>
+                </div>
+
+                {/* View dropdown (week, month, timeline), opening over the calendar. A query param, so each pick is a partial
+                    reload and the server answers with the matching range; remembered per device (fw_calendar_view cookie,
+                    read by CalendarController::index). The timeline has no zoom: it is endless, at one day size. */}
+                <div className="w-40">
+                    <Picker
+                        searchable={false}
+                        floating
+                        ariaLabel={t('calendar.view')}
+                        selected={[view]}
+                        onChange={([v]) => {
+                            if (!v) return;
+                            const next = v as CalendarProps['view'];
+                            remember(next);
+                            go({ view: next });
+                        }}
+                        options={[
+                            { value: 'week', label: t('calendar.week'), icon: CalendarRange },
+                            { value: 'month', label: t('calendar.month'), icon: CalendarDays },
+                            { value: 'timeline', label: t('calendar.timeline'), icon: ChartGantt },
+                        ]}
+                    />
+                </div>
+                {view === 'timeline' ? (
+                    <InfiniteTimeline ref={strip} items={items} range={range} filter={filter} onMonth={setStripMonth} />
+                ) : view === 'week' ? (
+                    <WeekView items={shown} range={range} onAdd={add} />
+                ) : (
+                    <MonthView items={shown} range={range} date={date} selected={selected} onSelect={setSelected} onAdd={add} />
+                )}
+            </div>
+            <EventSheet
+                open={sheet.open}
+                onOpenChange={(open) => setSheet((s) => ({ ...s, open }))}
+                defaultDate={sheet.day}
+                members={members}
+                contacts={contacts}
+                projects={projects}
+            />
+            <FilterSheet
+                open={filtering}
+                onOpenChange={setFiltering}
+                value={filter}
+                onChange={setFilter}
+                sources={sources}
+                members={members}
+                contacts={contacts}
+            />
+            <FeedSheet open={feedOpen} onOpenChange={setFeedOpen} url={feedUrl} subscriptions={subscriptions} />
+        </AppLayout>
+    );
+}

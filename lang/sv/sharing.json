@@ -1,0 +1,20 @@
+{
+    "title_named": "Dela ”:name”",
+    "close": "Stäng",
+    "access_title": "Vem har åtkomst",
+    "owner": "Ägare",
+    "you": "(du)",
+    "no_access": "Ingen åtkomst",
+    "can_edit": "Kan redigera",
+    "can_view": "Kan visa",
+    "vis_family": "Familjen",
+    "vis_invited": "Inbjudna",
+    "vis_private": "Bara jag",
+    "vis_family_desc": "Alla i familjen kan hitta den. Roller nedan.",
+    "vis_invited_desc": "Bara de du bjuder in kan hitta den.",
+    "vis_private_desc": "Bara du kan se den.",
+    "link_title": "Länk för visning",
+    "link_view_desc": "Alla med länken kan se. Inget konto behövs.",
+    "create_link": "Skapa en länk för visning",
+    "no_link": "Ingen länk för visning än."
+}

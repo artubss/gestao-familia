@@ -1,0 +1,20 @@
+{
+    "title_named": "Partager « :name »",
+    "close": "Fermer",
+    "access_title": "Qui a accès",
+    "owner": "Propriétaire",
+    "you": "(vous)",
+    "no_access": "Aucun accès",
+    "can_edit": "Peut modifier",
+    "can_view": "Peut voir",
+    "vis_family": "Famille",
+    "vis_invited": "Invités",
+    "vis_private": "Moi seul",
+    "vis_family_desc": "Toute la famille peut le trouver. Rôles ci-dessous.",
+    "vis_invited_desc": "Seules les personnes invitées peuvent le trouver.",
+    "vis_private_desc": "Vous seul pouvez le voir.",
+    "link_title": "Lien en lecture seule",
+    "link_view_desc": "Toute personne ayant le lien peut voir. Aucun compte requis.",
+    "create_link": "Créer un lien en lecture seule",
+    "no_link": "Pas encore de lien en lecture seule."
+}

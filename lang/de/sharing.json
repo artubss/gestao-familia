@@ -1,0 +1,20 @@
+{
+    "title_named": "„:name“ teilen",
+    "close": "Schließen",
+    "access_title": "Wer hat Zugriff",
+    "owner": "Eigentümer",
+    "you": "(du)",
+    "no_access": "Kein Zugriff",
+    "can_edit": "Kann bearbeiten",
+    "can_view": "Kann ansehen",
+    "vis_family": "Familie",
+    "vis_invited": "Eingeladen",
+    "vis_private": "Nur ich",
+    "vis_family_desc": "Alle in der Familie können es finden. Rollen siehe unten.",
+    "vis_invited_desc": "Nur die Personen, die du einlädst, können es finden.",
+    "vis_private_desc": "Nur du kannst es sehen.",
+    "link_title": "Link zum Ansehen",
+    "link_view_desc": "Alle mit dem Link können es ansehen. Kein Konto nötig.",
+    "create_link": "Link zum Ansehen erstellen",
+    "no_link": "Noch kein Link zum Ansehen."
+}

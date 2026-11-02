@@ -1,0 +1,336 @@
+<?php
+
+namespace Modules\Spending;
+
+use App\Models\Family;
+use App\Models\User;
+use App\Support\Guests\GuestShareable;
+use App\Support\Guests\ProvidesGuestView;
+use App\Support\Sharing\ProvidesPublicShareView;
+use App\Support\Sharing\Shareable;
+use App\Support\Tenancy\BelongsToFamily;
+use App\Support\Tenancy\CurrentFamily;
+use App\Support\Translations;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
+use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Validation\ValidationException;
+
+class SpendEvent extends Model implements ProvidesGuestView, ProvidesPublicShareView
+{
+    use BelongsToFamily;
+    use GuestShareable; // guests() + guestLink() come from here
+    use Shareable;
+
+    protected $table = 'spending_events';
+
+    protected $fillable = ['name', 'currency', 'display_currency', 'icon', 'created_by', 'count_in_monthly'];
+
+    protected $casts = ['archived_at' => 'datetime', 'count_in_monthly' => 'boolean'];
+
+    // Mirror the column default so a freshly created list reads true before a refresh.
+    protected $attributes = ['count_in_monthly' => true];
+
+    /**
+     * Create a list the way the UI does: every family member joins (Phase 1: equal split among all),
+     * the creator owns the share, and visibility stays at the `family` default so everyone can add
+     * spends until the owner narrows it. Shared by storeEvent() and the auto-created "Others" list.
+     */
+    public static function createFor(User $user, array $attrs): self
+    {
+        $event = static::create([...$attrs, 'created_by' => $user->id]);
+        $event->members()->sync(Family::findOrFail(CurrentFamily::id())->members->pluck('id'));
+        $event->shares()->create(['user_id' => $user->id, 'role' => 'owner']);
+
+        return $event;
+    }
+
+    /**
+     * The family's default "Others" list — where an expense added from the overview without picking a
+     * list lands. Resolved, or created on first use, and remembered in spending_settings.others_event_id
+     * so every such expense goes to the same list (one per family, idempotent). Resolution order: the
+     * remembered list if it still exists and isn't archived; else a live list already named "Others" in
+     * any app locale (so a list the family made by hand is adopted, not duplicated); else a fresh one
+     * named in the acting user's locale, in the family's default currency. Mirrors
+     * InventoryReplenishment::list().
+     */
+    public static function others(User $user): self
+    {
+        $settings = SpendSetting::current();
+        $event = $settings->others_event_id ? static::whereNull('archived_at')->find($settings->others_event_id) : null;
+
+        if (! $event) {
+            $names = collect(array_keys(Translations::LOCALES))->map(fn (string $l) => Translations::get('spending.others_list', $l))->unique()->all();
+            $event = static::whereNull('archived_at')->whereIn('name', $names)->orderBy('id')->first();
+        }
+
+        if (! $event) {
+            $event = static::createFor($user, [
+                'name' => Translations::get('spending.others_list'),
+                'currency' => SpendSetting::defaultCurrency() ?? Currencies::FALLBACK,
+                'icon' => 'wallet',
+            ]);
+        }
+
+        if ($settings->others_event_id !== $event->id) {
+            $settings->forceFill(['others_event_id' => $event->id])->save(); // remember it (also heals a stale pointer)
+        }
+
+        return $event;
+    }
+
+    /** Participants the spends are split among (snapshot of the family at creation). */
+    public function members(): BelongsToMany
+    {
+        return $this->belongsToMany(User::class, 'spending_event_user', 'spend_event_id', 'user_id');
+    }
+
+    /** Per-participant split settings (headcount + covered_by); rows exist only for non-defaults. */
+    public function participantSettings(): HasMany
+    {
+        return $this->hasMany(SpendParticipant::class);
+    }
+
+    /**
+     * Split settings for the balance math: every participant's key => headcount weight (>=1), and the
+     * cover map (key => coverer key). Participants default to weight 1 and no cover, so events with no
+     * `spending_participants` rows split equally among everyone exactly as before.
+     *
+     * @return array{weights: array<string,int>, coveredBy: array<string,string>}
+     */
+    public function splitSettings(): array
+    {
+        $names = $this->participantNames();
+        $weights = array_fill_keys(array_keys($names), 1);
+        $coveredBy = [];
+
+        foreach ($this->participantSettings as $p) {
+            if (! array_key_exists($p->participant_key, $weights)) {
+                continue; // stale row for a participant no longer on the event
+            }
+            $weights[$p->participant_key] = max(1, $p->weight);
+            // Only honour a cover pointing at a real, current participant.
+            if ($p->covered_by && array_key_exists($p->covered_by, $names)) {
+                $coveredBy[$p->participant_key] = $p->covered_by;
+            }
+        }
+
+        return ['weights' => $weights, 'coveredBy' => $coveredBy];
+    }
+
+    /**
+     * Every participant's balance key => display name, across family members ('u{id}') and guests
+     * ('g{id}'). Namespaced so a user id and a guest id can never collide in the balance sheet.
+     *
+     * @return array<string, string>
+     */
+    public function participantNames(): array
+    {
+        // Split participants = family members who can actually reach the event (either `family`
+        // visibility, or an explicit share) plus guests. A member whose access is revoked drops out of
+        // the split — EXCEPT one who fronted money for a spend, who stays so their payment is still
+        // attributed and can be settled. Mirrors ShareAccess::roleFor for members.
+        $visibility = $this->visibility();
+        $shared = $this->shares()->pluck('user_id')->all();
+        $paidBy = $this->spends()->whereNotNull('payer_id')->distinct()->pluck('payer_id')->all();
+
+        $names = [];
+        foreach ($this->members()->get(['users.id', 'name']) as $m) {
+            $hasAccess = $visibility === 'family' || in_array($m->id, $shared, true);
+            if ($hasAccess || in_array($m->id, $paidBy, true)) {
+                $names['u'.$m->id] = $m->name;
+            }
+        }
+        foreach ($this->guests as $g) {
+            $names['g'.$g->id] = $g->name;
+        }
+
+        return $names;
+    }
+
+    /**
+     * An archived list is read-only for everyone: members, guests, MCP and imports. Spend and
+     * SpendSettlement call this from their model events, so every write path goes through one check.
+     * Why: on 2026-10-19 a stranger used a list's old, open guest link (archived since 2026-08-25) to
+     * add a EUR 2.3M spend. Before this, archiving only hid a list from the dashboard and pickers.
+     * Ids are looked up without the family scope because the caller already holds the row.
+     */
+    public static function assertWritable(array $eventIds): void
+    {
+        $ids = array_values(array_filter($eventIds));
+        if ($ids && static::withoutGlobalScopes()->whereKey($ids)->whereNotNull('archived_at')->exists()) {
+            throw ValidationException::withMessages(['archived' => Translations::get('spending.list_archived')]);
+        }
+    }
+
+    /**
+     * Build the stored spend columns from validated input, freezing the FX conversion at the spend's
+     * date. Payer + created_by are added by the caller (differs for user vs guest spends). Single
+     * source of the money math so owner and guest write paths can never drift.
+     */
+    public function buildSpend(array $data): array
+    {
+        // Decimal major units in, integer minor units stored. round() so 48.00 -> 4800 exactly.
+        $amount = (int) round($data['amount'] * 100);
+        $baseAmount = Fx::convert($amount, $data['currency'], $this->currency, $data['spent_at']);
+
+        $attrs = [
+            'source_id' => $data['source_id'] ?? null,
+            'amount' => $amount,
+            'currency' => $data['currency'],
+            'base_amount' => $baseAmount,
+            'rate' => $amount ? $baseAmount / $amount : 1,
+            'category' => $data['category'],
+            'note' => $data['note'] ?? null,
+            'spent_at' => $data['spent_at'],
+        ];
+        // Shop is only touched when the caller sends it (the member form always does, '' clearing it), so
+        // a guest edit or a move — which don't know about shops — leaves an existing store name intact.
+        if (array_key_exists('store', $data)) {
+            $attrs['store'] = trim((string) $data['store']) ?: null;
+        }
+        // Monthly flag, likewise only when sent (guest forms don't know it). A value equal to the list's
+        // setting is stored as null (= follow the list), so the forms can always send the toggle's visible
+        // state and only a real deviation pins the expense. See the migration for why null = inherit.
+        if (array_key_exists('count_in_monthly', $data)) {
+            $flag = $data['count_in_monthly'];
+            $attrs['count_in_monthly'] = $flag === null || (bool) $flag === (bool) $this->count_in_monthly ? null : (bool) $flag;
+        }
+
+        return $attrs;
+    }
+
+    /**
+     * Validation rules for a spend's own fields on this list. The payer can be any participant: a family
+     * member ('u{id}') or a guest ('g{id}'), same namespaced keys as the split. Shared by the web forms
+     * (which add receipt/split rules on top) and the MCP tools, so both validate identically.
+     */
+    public function spendRules(): array
+    {
+        return [
+            'amount' => ['required', 'numeric', 'gt:0'],
+            'currency' => ['required', 'in:'.implode(',', SpendingController::CURRENCIES)],
+            'category' => ['required', 'in:'.implode(',', SpendCategory::keysFor())],
+            'payer_key' => ['required', 'string', 'in:'.implode(',', array_keys($this->participantNames()))],
+            // Optional payment source; must be one of the family's (SpendSource is family-scoped).
+            'source_id' => ['nullable', 'integer', 'in:'.implode(',', SpendSource::pluck('id')->all() ?: [0])],
+            'note' => ['nullable', 'string', 'max:255'],
+            'store' => ['nullable', 'string', 'max:120'], // shop / merchant name, free text (see Spend::shopNames)
+            'spent_at' => ['required', 'date'],
+            // Per-expense "count in monthly spending" override; null/absent = follow this list's setting.
+            'count_in_monthly' => ['sometimes', 'nullable', 'boolean'],
+        ];
+    }
+
+    /** Stored columns for validated spend input: payer mapped from payer_key + buildSpend()'s money math. */
+    public function spendColumns(array $data): array
+    {
+        // 'u{id}' -> member payer, 'g{id}' -> guest payer. Exactly one column is set; the other stays null.
+        $isGuest = str_starts_with($data['payer_key'], 'g');
+        $payerId = (int) substr($data['payer_key'], 1);
+
+        return [
+            'payer_id' => $isGuest ? null : $payerId,
+            'payer_guest_id' => $isGuest ? $payerId : null,
+            ...$this->buildSpend($data),
+        ];
+    }
+
+    public function spends(): HasMany
+    {
+        return $this->hasMany(Spend::class);
+    }
+
+    public function settlements(): HasMany
+    {
+        return $this->hasMany(SpendSettlement::class);
+    }
+
+    /** Read-only payload for the public invite link (no auth, no receipts, no editing). */
+    public function publicShareView(): array
+    {
+        $members = $this->members()->get(['users.id', 'name']);
+        $spends = $this->spends()->with('payer:id,name')->latest('spent_at')->latest('id')->get();
+
+        return [
+            'component' => 'spending/public-event',
+            'props' => [
+                'event' => [
+                    'name' => $this->name,
+                    'currency' => $this->currency,
+                    'total' => (int) $spends->sum('base_amount'),
+                    'members' => $members->map(fn ($m) => ['id' => $m->id, 'name' => $m->name])->values(),
+                ],
+                // Category metadata so the public read-only log renders icons/labels for dynamic categories.
+                'categories' => SpendCategory::payloadFor((int) $this->family_id),
+                'spends' => $spends->map(fn (Spend $s) => [
+                    'id' => $s->id,
+                    'amount' => $s->amount,
+                    'currency' => $s->currency,
+                    'base_amount' => $s->base_amount,
+                    'category' => $s->category,
+                    'note' => $s->note,
+                    'payer' => $s->payer?->name,
+                    'spent_at' => $s->spent_at->toDateString(),
+                ])->values(),
+            ],
+        ];
+    }
+
+    /**
+     * Guest page (reached via the guest link, after any password gate). Shows the full split across
+     * family members and guests; the client picks "who am I" from the guest list (remembered locally)
+     * and gets the add-expense form only if that guest's role is editor. Writes post to the spending
+     * guest routes, authorized server-side by GuestAccess.
+     */
+    public function guestView(): array
+    {
+        $spends = $this->spends()
+            ->with(['payer:id,name', 'payerGuest:id,name', 'source:id,name,type', 'shares'])
+            ->latest('spent_at')->latest('id')->get();
+        $settlements = $this->settlements()->get();
+        $balances = EventBalances::of($this, $spends, $settlements);
+        $names = $this->participantNames();
+        $keyName = fn (string $key) => $names[$key] ?? '?';
+        $transfers = $settlements->sortByDesc('id')->map(fn (SpendSettlement $t) => [
+            'id' => $t->id,
+            'from' => $keyName($t->from_key),
+            'to' => $keyName($t->to_key),
+            'amount' => $t->amount,
+            'note' => $t->note,
+            'date' => $t->created_at?->toDateString(),
+        ])->values();
+
+        return [
+            'component' => 'spending/guest-event',
+            'props' => [
+                'token' => $this->guestLink?->token,
+                'event' => [
+                    'name' => $this->name,
+                    'currency' => $this->currency,
+                    'total' => (int) $spends->sum('base_amount'),
+                    'archived' => $this->archived_at !== null, // read-only: the page hides every write control
+                    // The family's dynamic categories (guest context has the event's family scope set).
+                    'categories' => SpendCategory::payloadFor((int) $this->family_id),
+                    'currencies' => SpendingController::CURRENCIES,
+                ],
+                'guests' => $this->guests->map(fn ($g) => [
+                    'id' => $g->id, 'name' => $g->name, 'role' => $g->role,
+                ])->values(),
+                'spends' => $spends->map(fn (Spend $s) => [
+                    'id' => $s->id,
+                    'amount' => $s->amount,
+                    'currency' => $s->currency,
+                    'base_amount' => $s->base_amount,
+                    'category' => $s->category,
+                    'note' => $s->note,
+                    'payer' => ['name' => $s->payer?->name ?? $s->payerGuest?->name, 'guestId' => $s->payer_guest_id],
+                    'spent_at' => $s->spent_at->toDateString(),
+                ])->values(),
+                'balances' => $balances['balances'],
+                'suggestions' => $balances['suggestions'],
+                'transfers' => $transfers,
+            ],
+        ];
+    }
+}

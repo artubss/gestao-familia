@@ -1,0 +1,40 @@
+<?php
+
+namespace Modules\Notes\Mcp;
+
+use App\Mcp\Tool;
+use Illuminate\Contracts\JsonSchema\JsonSchema;
+use Laravel\Mcp\Request;
+use Laravel\Mcp\Response;
+use Laravel\Mcp\ResponseFactory;
+use Modules\Notes\NotesTrash;
+
+// Same restore as Settings > Recently deleted (NotesTrash).
+class Restore extends Tool
+{
+    protected string $module = 'notes';
+
+    protected string $access = 'write';
+
+    protected string $name = 'notes_restore';
+
+    protected string $description = 'Use this when the user wants a deleted note back. Takes an id from notes_list_trash.';
+
+    protected string $title = 'Restore note';
+
+    public function schema(JsonSchema $schema): array
+    {
+        return ['note_id' => $schema->integer()->description('Note id, from notes_list_trash.')->required()];
+    }
+
+    public function handle(Request $request): Response|ResponseFactory
+    {
+        $id = (int) $request->validate(['note_id' => ['required', 'integer']])['note_id'];
+        $path = NotesTrash::restore($this->user(), 'note', $id);
+        if (! $path) {
+            return Response::error('Not found in the trash (it may have been restored already or removed for good).');
+        }
+
+        return Response::structured(['restored' => true, 'id' => $id, 'url' => $this->url($path)]);
+    }
+}
