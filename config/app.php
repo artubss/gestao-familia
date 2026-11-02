@@ -80,6 +80,10 @@ return [
 
     'locale' => env('APP_LOCALE', 'pt'),
 
+    // When false, guests (login/sign-up) always see APP_LOCALE instead of Accept-Language. familywell.co
+    // keeps the default true; self-hosted installs often set false with APP_LOCALE=pt.
+    'locale_prefer_browser' => env('LOCALE_PREFER_BROWSER', true),
+
     'fallback_locale' => env('APP_FALLBACK_LOCALE', 'en'),
 
     'faker_locale' => env('APP_FAKER_LOCALE', 'pt_BR'),

@@ -1,5 +1,6 @@
 import { AppWordmark } from '@/components/app-logo';
 import AppLogoIcon from '@/components/app-logo-icon';
+import { useT } from '@/lib/i18n';
 import { usePage } from '@inertiajs/react';
 
 interface AuthLayoutProps {
@@ -13,27 +14,25 @@ interface AuthLayoutProps {
     image?: string;
 }
 
-// Brand-panel content per auth screen (design: "Web · Auth Flow"). Keyed by route name so the pages
-// stay focused on their forms; anything not listed (verify-email)
-// falls back to the calm login panel, keeping the whole auth surface consistent.
-// The images are photos of cosy home interiors generated for FamilyWell (public/images/auth/*.webp,
-// 1024x1536, ~150 KB): evening living room (login), morning kitchen (register).
-type PanelContent = { headline: string; sub: string; image: string };
+// Brand-panel content per auth screen (design: "Web · Auth Flow"). Keyed by route name; strings live in
+// lang/*/auth.json (login_panel_*, register_panel_*). Images: public/images/auth/*.webp.
+type PanelContent = { headlineKey: string; subKey: string; image: string };
 
 const PANELS: Record<string, PanelContent> = {
     login: {
-        headline: 'Where your family finds its rhythm.',
-        sub: 'Calm, shared organization for the people who matter most.',
+        headlineKey: 'auth.login_panel_headline',
+        subKey: 'auth.login_panel_sub',
         image: '/images/auth/login.webp',
     },
     register: {
-        headline: 'Start something calm together.',
-        sub: 'Create a shared home for schedules, lists, and the little moments in between.',
+        headlineKey: 'auth.register_panel_headline',
+        subKey: 'auth.register_panel_sub',
         image: '/images/auth/register.webp',
     },
 };
 
 export default function AuthSplitLayout({ children, title, description, headline, sub, image }: AuthLayoutProps) {
+    const t = useT();
     const { name } = usePage().props as { name?: string };
     // The outlined wordmark is the FamilyWell brand; a self-hosted instance with its own APP_NAME keeps its name as text.
     const isBrandName = !name || name.toLowerCase() === 'familywell';
@@ -41,7 +40,11 @@ export default function AuthSplitLayout({ children, title, description, headline
     const routeName = typeof route().current === 'function' ? route().current() : undefined;
     const base = (routeName && PANELS[routeName]) || PANELS.login;
     // Explicit props win over the route map, so onboarding can inject the user's name per step.
-    const panel = { headline: headline ?? base.headline, sub: sub ?? base.sub, image: image ?? base.image };
+    const panel = {
+        headline: headline ?? t(base.headlineKey),
+        sub: sub ?? t(base.subKey),
+        image: image ?? base.image,
+    };
 
     return (
         <div className="grid min-h-dvh lg:grid-cols-2">

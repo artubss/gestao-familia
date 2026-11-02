@@ -16,7 +16,9 @@ class SetLocale
     {
         $locale = $request->user()?->locale;
         if (! $locale || ! Translations::supported($locale)) {
-            $locale = Translations::fromBrowser($request);
+            $locale = config('app.locale_prefer_browser', true)
+                ? Translations::fromBrowser($request)
+                : (string) config('app.locale', 'en');
         }
         app()->setLocale($locale);
 

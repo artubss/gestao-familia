@@ -68,6 +68,15 @@ it('shows guests the page in their browser language, the app default when unsupp
     $this->get('/login')->assertInertia(fn ($page) => $page->where('locale', 'pt'));
 });
 
+it('uses APP_LOCALE for guests when browser locale is disabled', function () {
+    config(['app.locale_prefer_browser' => false, 'app.locale' => 'pt']);
+
+    $this->get('/register', ['Accept-Language' => 'en-US,en;q=0.9'])
+        ->assertInertia(fn ($page) => $page
+            ->where('locale', 'pt')
+            ->where('translations.auth.create_account_title', 'Crie sua conta'));
+});
+
 it('saves the sign-up page language as the new account locale', function () {
     signInWithCode('ana@example.com', ['Accept-Language' => 'ro-RO,ro;q=0.9'])->assertRedirect();
 
