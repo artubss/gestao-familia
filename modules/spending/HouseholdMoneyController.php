@@ -132,7 +132,7 @@ class HouseholdMoneyController
         ]);
         $token = $this->pluggy->connectToken('family-'.CurrentFamily::id().'-user-'.$request->integer('user_id'));
 
-        return response()->json(['token' => $token, 'sandbox' => $this->pluggy->sandbox()]);
+        return response()->json(['token' => $token, 'accessToken' => $token, 'sandbox' => $this->pluggy->sandbox()]);
     }
 
     public function storeConnection(Request $request): RedirectResponse

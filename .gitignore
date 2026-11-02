@@ -1,4 +1,7 @@
 /deploy/easypanel/_ssh*.py
+/deploy/easypanel/_apply_env.py
+/deploy/easypanel/_read_log.py
+/deploy/easypanel/credenciais-sorio.local.env
 /deploy/easypanel/_*.log
 /deploy/easypanel/_*.txt
 .env

@@ -36,7 +36,8 @@ declare global {
         PluggyConnect?: new (options: {
             connectToken: string;
             includeSandbox?: boolean;
-            onSuccess: (data: { item: { id: string } }) => void;
+            onSuccess: (data: { item?: { id: string }; id?: string }) => void;
+            onError?: (error: { message?: string }) => void;
         }) => { init: () => void };
     }
 }
@@ -80,33 +81,43 @@ export default function Household({
 
     const connect = async (e: FormEvent) => {
         e.preventDefault();
-        const response = await fetch(route('spending.household.banks.token'), {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', Accept: 'application/json', 'X-XSRF-TOKEN': csrf() },
-            body: JSON.stringify({ user_id: link.data.user_id }),
-        });
-        if (!response.ok) return;
-        const body = (await response.json()) as { token: string; sandbox: boolean };
-        if (!window.PluggyConnect) {
-            await new Promise<void>((resolve, reject) => {
-                const script = document.createElement('script');
-                script.src = 'https://cdn.pluggy.ai/pluggy-connect/latest/pluggy-connect.js';
-                script.onload = () => resolve();
-                script.onerror = () => reject();
-                document.body.appendChild(script);
+        link.clearErrors();
+        try {
+            const response = await fetch(route('spending.household.banks.token'), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', Accept: 'application/json', 'X-XSRF-TOKEN': csrf() },
+                body: JSON.stringify({ user_id: link.data.user_id }),
             });
+            const body = (await response.json()) as { token?: string; accessToken?: string; sandbox?: boolean };
+            const connectToken = body.accessToken || body.token;
+            if (!response.ok || !connectToken) {
+                link.setError('label', t('spending.banks_connect_failed'));
+                return;
+            }
+            if (!window.PluggyConnect) {
+                await new Promise<void>((resolve, reject) => {
+                    const script = document.createElement('script');
+                    script.src = 'https://cdn.pluggy.ai/connect/v2/pluggy-connect.js';
+                    script.onload = () => resolve();
+                    script.onerror = () => reject();
+                    document.body.appendChild(script);
+                });
+            }
+            const widget = new window.PluggyConnect!({
+                connectToken,
+                includeSandbox: Boolean(body.sandbox),
+                onError: () => link.setError('label', t('spending.banks_connect_failed')),
+                onSuccess: (data) => {
+                    const item = data.item?.id ?? data.id;
+                    if (!item) return;
+                    link.transform((form) => ({ ...form, item_id: item }));
+                    link.post(route('spending.household.banks.store'), { preserveScroll: true });
+                },
+            });
+            widget.init();
+        } catch {
+            link.setError('label', t('spending.banks_connect_failed'));
         }
-        const widget = new window.PluggyConnect!({
-            connectToken: body.token,
-            includeSandbox: body.sandbox,
-            onSuccess: (data) => {
-                const item = (data as { item?: { id: string }; id?: string }).item?.id ?? (data as { id?: string }).id;
-                if (!item) return;
-                link.transform((form) => ({ ...form, item_id: item }));
-                link.post(route('spending.household.banks.store'), { preserveScroll: true });
-            },
-        });
-        widget.init();
     };
 
     return (

@@ -270,6 +270,7 @@
     "banks_label": "Nome da conexão",
     "banks_label_ph": "ex.: Nubank da Ana",
     "banks_connect": "Conectar banco",
+    "banks_connect_failed": "Não foi possível abrir a conexão. Tente de novo.",
     "banks_missing": "Para conectar de graça, crie o Meu Pluggy (uso pessoal) e defina PLUGGY_CLIENT_ID e PLUGGY_CLIENT_SECRET. Sem isso, os gastos manuais continuam funcionando.",
     "banks_free": "O Meu Pluggy é gratuito para as contas do próprio titular. O sandbox da Pluggy também é gratuito para testes.",
     "banks_sandbox": "Sandbox ligado: a janela de conexão pode usar o banco de teste da Pluggy.",
