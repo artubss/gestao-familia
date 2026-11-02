@@ -19,6 +19,7 @@ use Illuminate\Contracts\Auth\StatefulGuard;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\RateLimiter;
+use Illuminate\Support\Facades\URL;
 use Illuminate\Support\ServiceProvider;
 use Inertia\Inertia;
 use Laravel\Mcp\Server\Registrar;
@@ -62,6 +63,13 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
+        // TLS terminates at Easypanel/Traefik (or App Platform); Octane sees plain HTTP on :80. Without this,
+        // some redirects mix http with X-Forwarded-Port 443 → http://host:443/… in the browser.
+        $appUrl = config('app.url');
+        if (is_string($appUrl) && str_starts_with($appUrl, 'https://')) {
+            URL::forceScheme('https');
+        }
+
         // Short access tokens; clients refresh silently. A connector unused for 30 days re-runs consent.
         Passport::tokensExpireIn(now()->addHour());
         Passport::refreshTokensExpireIn(now()->addDays(30));
