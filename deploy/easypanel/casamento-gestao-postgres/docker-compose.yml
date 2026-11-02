@@ -1,0 +1,20 @@
+# Easypanel → projeto sorio → serviço Compose "casamento-gestao-postgres"
+# Fonte: GitHub artubss/gestao-familia, Build path /deploy/easypanel/casamento-gestao-postgres
+# Sem ports: só rede interna do Easypanel (Traefik não aponta domínio para este serviço).
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-gestao_familia}
+      POSTGRES_USER: ${POSTGRES_USER:-gestao}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in Easypanel}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB']
+      interval: 5s
+      timeout: 5s
+      retries: 12
+volumes:
+  pgdata:

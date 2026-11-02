@@ -16,6 +16,10 @@ fi
 php artisan migrate --force
 php artisan modules:migrate
 
+if [ -n "$INITIAL_ADMIN_EMAIL" ] && [ -n "$INITIAL_ADMIN_PASSWORD" ]; then
+    php artisan db:seed --class=Database\\Seeders\\InitialAdminSeeder --force
+fi
+
 # Catch a boot failure here, where its real message can be printed. See docker/preflight.php.
 php docker/preflight.php
 

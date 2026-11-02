@@ -1,4 +1,5 @@
-.DS_Store
+/deploy/easypanel/credenciais*.env
+/deploy/easypanel/Credenciais*.md
 .env
 .env.backup
 .env.production
