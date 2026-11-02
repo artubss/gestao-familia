@@ -392,7 +392,7 @@ export const consumptionText = (lPer100: number | null, unit: UnitSystem): strin
  * formatter: `const carMoney = useCarMoney(); carMoney(1072.29)` -> "RON 1,072.29" / "1.072,29 lei".
  */
 export function useCarMoney(): (amount: number) => string {
-    const currency = usePage<{ carCurrency?: string }>().props.carCurrency ?? 'EUR';
+    const currency = usePage<{ carCurrency?: string }>().props.carCurrency ?? 'BRL';
     return (amount) => moneyOf(Math.round(amount * 100), currency);
 }
 

@@ -5,6 +5,7 @@ namespace Modules\Vehicles;
 use App\Support\Tenancy\FamilyClock;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
+use Modules\Spending\Currencies;
 use Modules\Spending\SpendSetting;
 
 /**
@@ -60,7 +61,7 @@ class VehicleAnalytics
         // family's spending default when there are no spends yet, so the header still reads sensibly.
         $currency = $links->first()?->spend?->currency
             ?? SpendSetting::defaultCurrency((int) $vehicle->family_id)
-            ?? 'EUR';
+            ?? Currencies::FALLBACK;
 
         // Long ranges group the trend by month, else by day — same 90-day threshold the Spending screen uses.
         $byMonth = $start->diffInDays($end) > 90;

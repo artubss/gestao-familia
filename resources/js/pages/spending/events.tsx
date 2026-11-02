@@ -92,7 +92,7 @@ export default function Events({
     currencies: string[];
     scanEnabled?: boolean; // Gemini key present => "Scan receipt" shows in the quick-add sheet
     aiCategorize?: boolean; // TypeSafe key present => the note suggests a category as you type
-    defaultCurrency: string; // family default, else the server's fallback (EUR)
+    defaultCurrency: string; // family default, else the server's fallback (BRL)
     // Month-to-date total across every visible list, already rolled up server-side into one currency.
     thisMonth: { total: number; currency: string };
     expenses: Expense[];

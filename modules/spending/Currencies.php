@@ -15,9 +15,8 @@ namespace Modules\Spending;
  */
 final class Currencies
 {
-    // The default when a family hasn't picked one (and the old list's first entry): never ALL[0], which
-    // is just alphabetical (AED).
-    public const FALLBACK = 'EUR';
+    // The default when a family hasn't picked one: Brazilian real, never ALL[0] (alphabetical, AED).
+    public const FALLBACK = 'BRL';
 
     /**
      * The currency used in a country (ISO 3166 alpha-2), from ICU's locale data, so there is no country

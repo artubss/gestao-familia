@@ -45,7 +45,7 @@ it('opens the sheet with countries that fill in the rest and real preview values
     actingAs($admin)->get('/settings/family/region')->assertOk()->assertInertia(fn ($page) => $page
         ->component('settings/family')
         ->where('regionSheet.units', 'metric')
-        ->where('regionSheet.currency', 'EUR') // unset falls back to EUR, like everywhere money shows
+        ->where('regionSheet.currency', 'BRL') // unset falls back to the real
         ->where('regionSheet.samples.km', 84210)
         ->where('regionSheet.countries', fn ($countries) => collect($countries)->contains(fn ($c) => $c['code'] === 'RO' && $c['currency'] === 'RON' && $c['units'] === 'metric')
             && collect($countries)->contains(fn ($c) => $c['code'] === 'US' && $c['currency'] === 'USD' && $c['units'] === 'imperial')));
@@ -78,6 +78,6 @@ it('gives onboarding the same country list for its Change sheet', function () {
     actingAs(User::factory()->create())->withHeader('CF-IPCountry', 'GB')->get('/onboarding/create')->assertOk()
         ->assertInertia(fn ($page) => $page
             ->where('region.units', 'imperial')
-            ->where('region.currency', 'GBP')
+            ->where('region.currency', 'BRL')
             ->where('region.countries', fn ($countries) => collect($countries)->contains(fn ($c) => $c['code'] === 'DE' && $c['currency'] === 'EUR')));
 });

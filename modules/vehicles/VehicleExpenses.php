@@ -5,6 +5,7 @@ namespace Modules\Vehicles;
 use App\Models\Family;
 use App\Models\User;
 use App\Support\Modules\ModuleRegistry;
+use Modules\Spending\Currencies;
 use Modules\Spending\Spend;
 use Modules\Spending\SpendEvent;
 use Modules\Spending\SpendSetting;
@@ -77,25 +78,25 @@ class VehicleExpenses
 
     /**
      * The currency car money is shown in: the "Vehicles" spend event's (every car cost mirrors into it), else
-     * the family's spending default, else EUR. Same rule as VehicleAnalytics, for places that show raw costs
+     * the family's spending default, else the real. Same rule as VehicleAnalytics, for places that show raw costs
      * (repair/maintenance/fuel `cost` columns hold amounts in this currency, without one of their own).
      */
     public static function currency(int $familyId): string
     {
         return SpendEvent::query()->where('family_id', $familyId)->where('name', self::EVENT_NAME)->value('currency')
             ?? SpendSetting::defaultCurrency($familyId)
-            ?? 'EUR';
+            ?? Currencies::FALLBACK;
     }
 
     /**
      * Find-or-create the family's "Vehicles" spend event, provisioning its roster + owner share on first
      * creation exactly as the Spending controller does for a hand-made list. Currency defaults to the
-     * family's spending default (falling back to EUR), so amounts entered without a currency picker are
+     * family's spending default (falling back to the real), so amounts entered without a currency picker are
      * interpreted sensibly.
      */
     private static function eventFor(int $familyId, User $actor): SpendEvent
     {
-        $currency = SpendSetting::defaultCurrency($familyId) ?? 'EUR';
+        $currency = SpendSetting::defaultCurrency($familyId) ?? Currencies::FALLBACK;
 
         $event = SpendEvent::firstOrCreate(
             ['name' => self::EVENT_NAME, 'family_id' => $familyId],

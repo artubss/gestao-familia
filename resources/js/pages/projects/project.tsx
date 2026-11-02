@@ -1283,7 +1283,7 @@ function LinkItemsModal({
                                 <div className="min-w-0 flex-1">
                                     <div className="text-primary truncate text-sm font-medium">{i.name}</div>
                                     <div className="text-muted-foreground truncate text-xs">
-                                        {type === 'contact' ? (i.phone ?? t('projects.no_phone')) : money(i.total ?? 0, i.currency ?? 'EUR')}
+                                        {type === 'contact' ? (i.phone ?? t('projects.no_phone')) : money(i.total ?? 0, i.currency ?? 'BRL')}
                                     </div>
                                 </div>
                                 <span

@@ -91,7 +91,7 @@ it('totals per-vehicle spend and breaks it down by type, in one consistent curre
 
     // Month-to-date: only this month's five expenses (100+200+50+40+30 = €420).
     $mtd = VehicleAnalytics::forVehicle($vehicle, $today->copy()->startOfMonth(), $today->copy());
-    expect($mtd['currency'])->toBe('EUR')
+    expect($mtd['currency'])->toBe('BRL')
         ->and($mtd['total'])->toBe(42000)
         ->and($mtd['count'])->toBe(5);
 
@@ -204,6 +204,6 @@ it('feeds the compact running-cost headline into the Overview', function () {
         fn ($p) => $p->component('vehicles/overview')
             ->where('analytics.ytdTotal', 25000)
             ->where('analytics.hasData', true)
-            ->where('analytics.currency', 'EUR')->etc()
+            ->where('analytics.currency', 'BRL')->etc()
     );
 });

@@ -18,7 +18,7 @@ it('offers every convertible currency and never the old list order as a default'
     expect(Currencies::ALL)->toContain('EUR', 'RON', 'USD', 'GBP', 'JPY', 'MDL', 'INR', 'BRL')
         ->not->toContain('CNH', 'XDR', 'HRK', 'SLL')
         ->and(count(Currencies::ALL))->toBe(count(array_unique(Currencies::ALL)))
-        ->and(Currencies::FALLBACK)->toBe('EUR');
+        ->and(Currencies::FALLBACK)->toBe('BRL');
 });
 
 it('maps a country to its currency, and nothing for an unknown or currency-less one', function () {
@@ -29,22 +29,22 @@ it('maps a country to its currency, and nothing for an unknown or currency-less 
         ->and(Currencies::forCountry(null))->toBeNull();
 });
 
-it('sets a new family\'s default currency from where its creator signs up', function () {
+it('sets a new family\'s default currency to BRL even when the signup country is elsewhere', function () {
     test()->artisan('modules:migrate')->assertExitCode(0);
     $user = User::factory()->create();
 
     actingAs($user)->post('/onboarding', ['name' => 'Popescu', 'color' => '#2D5E3A', 'emoji' => '🏡'], ['CF-IPCountry' => 'RO'])
         ->assertRedirect();
 
-    expect(SpendSetting::defaultCurrency($user->fresh()->families()->first()->id))->toBe('RON');
+    expect(SpendSetting::defaultCurrency($user->fresh()->families()->first()->id))->toBe('BRL');
 });
 
-it('leaves the default unset without a usable country (local, Tor), so EUR applies', function () {
+it('sets BRL when the signup has no usable country', function () {
     test()->artisan('modules:migrate')->assertExitCode(0);
     foreach ([[], ['CF-IPCountry' => 'T1']] as $i => $headers) {
         $user = User::factory()->create();
         actingAs($user)->post('/onboarding', ['name' => "Fam {$i}", 'color' => '#2D5E3A', 'emoji' => '🏡'], $headers)->assertRedirect();
-        expect(SpendSetting::defaultCurrency($user->fresh()->families()->first()->id))->toBeNull();
+        expect(SpendSetting::defaultCurrency($user->fresh()->families()->first()->id))->toBe('BRL');
     }
 });
 
@@ -57,7 +57,7 @@ it('accepts a list in any supported currency', function () {
     Http::fake(['*' => Http::response(['rates' => []])]);
 
     actingAs($user)->get('/m/spending')->assertInertia(fn ($page) => $page
-        ->where('defaultCurrency', 'EUR') // nothing set: the fallback, not the alphabetical first (AED)
+        ->where('defaultCurrency', 'BRL') // nothing else set: the real, not the alphabetical first (AED)
         ->where('currencies', Currencies::ALL));
     actingAs($user)->post('/m/spending/events', ['name' => 'Tokyo trip', 'currency' => 'JPY'])->assertSessionHasNoErrors();
     actingAs($user)->post('/m/spending/events', ['name' => 'Nope', 'currency' => 'XDR'])->assertSessionHasErrors('currency');

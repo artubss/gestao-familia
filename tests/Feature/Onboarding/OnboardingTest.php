@@ -152,7 +152,7 @@ it('shows the region guess and applies the currency and units picked in onboardi
         ->assertInertia(fn ($page) => $page->component('onboarding/create-family')
             ->where('userName', 'Ana Rivera')
             ->where('region.country', 'RO')
-            ->where('region.currency', 'RON')
+            ->where('region.currency', 'BRL')
             ->where('region.units', 'metric'));
 
     actingAs($user)->withHeader('CF-IPCountry', 'RO')

@@ -198,7 +198,7 @@ it('gives every Vehicles page the car currency, never a hard-coded euro', functi
     $car = makeVehicle();
 
     // No Vehicles list or default yet: the fallback.
-    actingAs($users[0])->get("/m/vehicles/{$car->id}")->assertInertia(fn ($p) => $p->where('carCurrency', 'EUR')->etc());
+    actingAs($users[0])->get("/m/vehicles/{$car->id}")->assertInertia(fn ($p) => $p->where('carCurrency', 'BRL')->etc());
 
     // A RON family (the bug: its lei amounts showed as €1,072.29).
     Modules\Spending\SpendSetting::current($family->id)->update(['default_currency' => 'RON']);

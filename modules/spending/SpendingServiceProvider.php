@@ -2,7 +2,6 @@
 
 namespace Modules\Spending;
 
-use App\Http\Middleware\TrackLastSeen;
 use App\Models\EntityVisit;
 use App\Models\Family;
 use App\Models\User;
@@ -21,7 +20,6 @@ use App\Support\Sharing\ShareableRegistry;
 use App\Support\Tenancy\CurrentFamily;
 use App\Support\Translations;
 use App\Support\Trash\Trash;
-use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\ServiceProvider;
 use Illuminate\Validation\ValidationException;
@@ -90,19 +88,14 @@ class SpendingServiceProvider extends ServiceProvider
         // Classic add's sub line ("last: bananas"): this person's newest expense with a note they can still see, through its list's sharing (the note is what it was for).
         AddKinds::last('spending', fn (User $u) => Spend::where('created_by', $u->id)->whereNotNull('note')->whereIn('spend_event_id', SpendData::visibleEvents($u)->select('id'))->latest('id')->value('note'));
 
-        // A new family's default currency is where its creator signs up from: Cloudflare's country on the
-        // onboarding request -> that country's currency (RO -> RON). Unknown country (local, Tor, no
-        // Cloudflare) leaves it unset, which falls back to Currencies::FALLBACK. Changeable in Settings.
-        // The "Region & units" sheet (onboarding step 1 and Settings, see App\Support\Region) shows that guess
-        // (onboarding.region) or the family's current one (family.region) and can change it: family.region.save
-        // (fired after family.created in onboarding, so a pick there wins over the country guess).
-        app(Hooks::class)->listen('onboarding.region', fn (array $region, ?string $country) => [
-            ...$region, 'currency' => Currencies::forCountry($country) ?? Currencies::FALLBACK, 'currencies' => Currencies::ALL,
+        // This install's default currency is always the real (Currencies::FALLBACK). Changeable in Settings.
+        // The "Region & units" sheet (onboarding step 1 and Settings, see App\Support\Region) shows that
+        // default (onboarding.region) or the family's current one (family.region).
+        app(Hooks::class)->listen('onboarding.region', fn (array $region) => [
+            ...$region, 'currency' => Currencies::FALLBACK, 'currencies' => Currencies::ALL,
         ]);
-        app(Hooks::class)->listen('family.created', function (Family $family, Request $request) {
-            if ($currency = Currencies::forCountry(TrackLastSeen::country($request))) {
-                SpendSetting::current($family->id)->update(['default_currency' => $currency]);
-            }
+        app(Hooks::class)->listen('family.created', function (Family $family) {
+            SpendSetting::current($family->id)->update(['default_currency' => Currencies::FALLBACK]);
         });
         app(Hooks::class)->listen('family.region', function (array $region, int $familyId, ?int $userId) {
             // Unset falls back to Currencies::FALLBACK everywhere money is shown, so that's what "current" is.
