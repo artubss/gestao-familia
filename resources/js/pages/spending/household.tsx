@@ -97,7 +97,7 @@ export default function Household({
             if (!window.PluggyConnect) {
                 await new Promise<void>((resolve, reject) => {
                     const script = document.createElement('script');
-                    script.src = 'https://cdn.pluggy.ai/connect/v2/pluggy-connect.js';
+                    script.src = 'https://cdn.pluggy.ai/pluggy-connect/latest/pluggy-connect.js';
                     script.onload = () => resolve();
                     script.onerror = () => reject();
                     document.body.appendChild(script);
@@ -294,6 +294,7 @@ export default function Household({
                             <div className="sm:col-span-2">
                                 <Label htmlFor="bank-label">{t('spending.banks_label')}</Label>
                                 <Input id="bank-label" value={link.data.label} onChange={(e) => link.setData('label', e.target.value)} placeholder={t('spending.banks_label_ph')} required />
+                                <InputError message={link.errors.label} />
                             </div>
                             <div className="sm:col-span-2">
                                 <Label htmlFor="bank-owner">{t('spending.banks_owner')}</Label>
