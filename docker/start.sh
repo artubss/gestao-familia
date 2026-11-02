@@ -24,4 +24,5 @@ fi
 php docker/preflight.php
 
 PORT="${PORT:-8000}"
-exec php artisan octane:start --server=frankenphp --host=0.0.0.0 --port="$PORT"
+FRANKENPHP_ADMIN_PORT="${FRANKENPHP_ADMIN_PORT:-2019}"
+exec php artisan octane:start --server=frankenphp --host=0.0.0.0 --port="$PORT" --admin-port="$FRANKENPHP_ADMIN_PORT"
