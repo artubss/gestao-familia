@@ -231,6 +231,15 @@ class SpendingServiceProvider extends ServiceProvider
                 Route::get('/analytics', [SpendingController::class, 'analytics'])->name('analytics');
                 // Module settings: default currency + definable categories. Reads are open to members;
                 // the write endpoints authorize admin-only inside the controller.
+                Route::get('/household', [HouseholdMoneyController::class, 'show'])->name('household');
+                Route::post('/household/fixed', [HouseholdMoneyController::class, 'storeFixed'])->name('household.fixed.store');
+                Route::delete('/household/fixed/{fixed}', [HouseholdMoneyController::class, 'destroyFixed'])->whereNumber('fixed')->name('household.fixed.destroy');
+                Route::post('/household/fixed/{fixed}/post', [HouseholdMoneyController::class, 'postFixed'])->whereNumber('fixed')->name('household.fixed.post');
+                Route::post('/household/manual', [HouseholdMoneyController::class, 'storeManual'])->name('household.manual');
+                Route::post('/household/banks/token', [HouseholdMoneyController::class, 'connectToken'])->name('household.banks.token');
+                Route::post('/household/banks', [HouseholdMoneyController::class, 'storeConnection'])->name('household.banks.store');
+                Route::delete('/household/banks/{connection}', [HouseholdMoneyController::class, 'destroyConnection'])->whereNumber('connection')->name('household.banks.destroy');
+                Route::post('/household/banks/{connection}/sync', [HouseholdMoneyController::class, 'sync'])->middleware('throttle:10,1')->whereNumber('connection')->name('household.banks.sync');
                 Route::get('/settings', [SpendingController::class, 'settings'])->name('settings');
                 Route::patch('/settings', [SpendingController::class, 'updateSettings'])->name('settings.update');
                 Route::post('/settings/recategorize', [SpendingController::class, 'recategorize'])->name('settings.recategorize');

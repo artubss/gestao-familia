@@ -37,6 +37,7 @@ use Modules\Recipes\Recipe;
 use Modules\Shopping\ShoppingItem;
 use Modules\Shopping\ShoppingList;
 use Modules\Shopping\ShoppingShop;
+use Modules\Spending\FixedExpense;
 use Modules\Spending\Spend;
 use Modules\Spending\SpendCategory;
 use Modules\Spending\SpendEvent;
@@ -346,9 +347,21 @@ class DemoSeeder extends Seeder
             Spend::create([
                 'spend_event_id' => $lists[$list]->id, 'payer_id' => $this->u[$payer]->id, 'created_by' => $this->u[$payer]->id,
                 'amount' => $cents, 'currency' => $this->currency(), 'base_amount' => $cents, 'rate' => 1,
-                'category' => $category, 'store' => $this->t($shop), 'note' => $this->t($note), 'spent_at' => $this->today->copy()->subDays($ago),
+                'category' => $category, 'store' => $this->t($shop), 'note' => $this->t($note),                 'spent_at' => $this->today->copy()->subDays($ago),
             ]);
         }
+
+        FixedExpense::create([
+            'name' => 'Rent',
+            'amount' => 180000,
+            'currency' => $this->currency(),
+            'category' => 'other',
+            'payer_id' => $this->u['David']->id,
+            'day_of_month' => 5,
+            'payment_method' => 'pix',
+            'active' => true,
+            'created_by' => $this->u['David']->id,
+        ]);
     }
 
     // ---- Inventory -----------------------------------------------------------------------------------

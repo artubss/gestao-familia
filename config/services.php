@@ -125,6 +125,15 @@ return [
     // localhost), plus the Team ID and a Sign in with Apple key (Key ID + the .p8 PEM contents). The PEM
     // may arrive on one line with literal \n escapes (that's how .do/apply.sh stores multi-line secrets);
     // SocialLogin turns those back into newlines.
+    // Meu Pluggy is free for the account holder's own banks (read-only). Sandbox is free with no card.
+    // Payments / Pix initiation are intentionally unused.
+    'pluggy' => [
+        'client_id' => env('PLUGGY_CLIENT_ID'),
+        'client_secret' => env('PLUGGY_CLIENT_SECRET'),
+        'url' => env('PLUGGY_API_URL', 'https://api.pluggy.ai'),
+        'sandbox' => (bool) env('PLUGGY_SANDBOX', false),
+    ],
+
     'apple' => [
         'client_id' => env('APPLE_CLIENT_ID'),
         'team_id' => env('APPLE_TEAM_ID'),

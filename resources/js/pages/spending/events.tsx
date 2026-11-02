@@ -1,7 +1,7 @@
 import { useAddAction } from '@/lib/add-action';
 import { openNewOnArrival } from '@/lib/create-intent';
 import { Head, Link, useForm, usePage } from '@inertiajs/react';
-import { Archive, Banknote, Camera, ChartLine, ChevronRight, Loader2, Plus, RotateCcw, Settings, Store, Tag, User, Wallet } from 'lucide-react';
+import { Archive, Banknote, Camera, ChartLine, ChevronRight, Landmark, Loader2, Plus, RotateCcw, Settings, Store, Tag, User, Wallet } from 'lucide-react';
 import { FormEventHandler, useRef, useState } from 'react';
 
 import { useCategorySuggest } from '@/hooks/use-category-suggest';
@@ -296,6 +296,11 @@ export default function Events({
                             </Link>
                         </Button>
                         {/* Module settings: default currency + expense categories. Directly right of Analytics. */}
+                        <Button asChild variant="outline" size="icon" title={t('spending.household_open')} aria-label={t('spending.household_open')}>
+                            <Link href={route('spending.household')}>
+                                <Landmark className="size-4" />
+                            </Link>
+                        </Button>
                         <Button asChild variant="outline" size="icon" title={t('spending.settings')} aria-label={t('spending.settings')}>
                             <Link href={route('spending.settings')}>
                                 <Settings className="size-4" />

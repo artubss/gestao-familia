@@ -29,7 +29,7 @@ class Spend extends Model
     protected $table = 'spending_spends';
 
     // receipt_path is legacy (single receipt); receipts are now rows in spending_receipts.
-    protected $fillable = ['spend_event_id', 'payer_id', 'payer_guest_id', 'source_id', 'amount', 'currency', 'base_amount', 'rate', 'category', 'store', 'note', 'receipt_path', 'spent_at', 'created_by', 'count_in_monthly'];
+    protected $fillable = ['spend_event_id', 'payer_id', 'payer_guest_id', 'source_id', 'amount', 'currency', 'base_amount', 'rate', 'category', 'store', 'note', 'receipt_path', 'spent_at', 'created_by', 'count_in_monthly', 'payment_method', 'bank_connection_id', 'fixed_expense_id', 'external_id'];
 
     protected $casts = [
         'amount' => 'integer',      // original amount in `currency`, minor units
