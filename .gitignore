@@ -1,5 +1,6 @@
-/deploy/easypanel/credenciais*.env
-/deploy/easypanel/Credenciais*.md
+/deploy/easypanel/_ssh*.py
+/deploy/easypanel/_*.log
+/deploy/easypanel/_*.txt
 .env
 .env.backup
 .env.production

@@ -9,8 +9,8 @@ Documentação Easypanel: [App](https://easypanel.io/docs/services/app), [Compos
 | Serviço Easypanel | Tipo | Domínio público | Rede |
 |-------------------|------|-----------------|------|
 | `casamento-gestao-postgres` | Compose | **nenhum** | Postgres só interno |
-| `casamento-gestao-api` | App (Dockerfile raiz) | `casamento-gestao-api.sorio.io` → porta **8000** | Laravel + Octane |
-| `casamento-gestao` | App (nginx proxy) | `casamento-gestao.sorio.io` → porta **80** | Proxy → `casamento-gestao-api:8000` |
+| `casamento-gestao-api` | App (Dockerfile raiz) | `casamento-gestao-api.sorio.io` → porta **80** (Easypanel `PORT`) | Laravel + Octane |
+| `casamento-gestao` | App (nginx proxy) | `casamento-gestao.sorio.io` → porta **80** | Proxy → `sorio_casamento-gestao-api:80` |
 
 O app é **Laravel + Inertia** (monólito). O “front” é um nginx que repassa tudo para a API; a subdomain `casamento-gestao-api` aponta direto para o mesmo backend (útil para MCP/OAuth e clientes que chamam API).
 
@@ -50,9 +50,9 @@ POSTGRES_PASSWORD=<senha-forte-unica>
 
 1. **New service → App** → nome `casamento-gestao-api`.
 2. **Source → GitHub** → `artubss/gestao-familia`, branch `master`, build path `/`.
-3. **Build → Dockerfile** (raiz do repo).
+3. **Build → Dockerfile** (raiz do repo). **Não use Nixpacks** — senão sobe nginx+php-fpm genérico e o app não responde.
 4. **Domains**:
-   - Host: `casamento-gestao-api.sorio.io`, HTTPS on, target port **8000**, marque como primary se quiser.
+   - Host: `casamento-gestao-api.sorio.io`, HTTPS on, target port **80**, marque como primary se quiser.
 5. **Environment** — copie de [`easypanel.env.example`](easypanel.env.example) e preencha `DB_PASSWORD`, `INITIAL_ADMIN_*`, etc.
 6. **Storage** (recomendado): volume em `/app/storage` (uploads + `app.key`).
 7. **Deploy** — no boot roda migrations + `InitialAdminSeeder` se `INITIAL_ADMIN_EMAIL` / `INITIAL_ADMIN_PASSWORD` estiverem definidos.
